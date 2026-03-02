@@ -44,7 +44,7 @@ public class DeltaByteArrayBenchmarks
     [Benchmark(Description = "DeltaLength_Short")]
     public int DecodeDeltaLengthShortStrings()
     {
-        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, ValueCount);
+        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, 0, ValueCount);
         DeltaLengthByteArrayDecoder.Decode(_deltaLengthShortStrings, ValueCount, state);
         return state.ValueCount;
     }
@@ -52,7 +52,7 @@ public class DeltaByteArrayBenchmarks
     [Benchmark(Description = "DeltaLength_Long")]
     public int DecodeDeltaLengthLongStrings()
     {
-        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, ValueCount);
+        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, 0, ValueCount);
         DeltaLengthByteArrayDecoder.Decode(_deltaLengthLongStrings, ValueCount, state);
         return state.ValueCount;
     }
@@ -60,7 +60,7 @@ public class DeltaByteArrayBenchmarks
     [Benchmark(Description = "DeltaByteArray_HighPrefix")]
     public int DecodeDeltaByteArrayHighPrefix()
     {
-        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, ValueCount);
+        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, 0, ValueCount);
         DeltaByteArrayDecoder.Decode(_deltaByteArrayHighPrefix, ValueCount, state);
         return state.ValueCount;
     }
@@ -68,7 +68,7 @@ public class DeltaByteArrayBenchmarks
     [Benchmark(Description = "DeltaByteArray_LowPrefix")]
     public int DecodeDeltaByteArrayLowPrefix()
     {
-        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, ValueCount);
+        using var state = new ColumnBuildState(PhysicalType.ByteArray, 0, 0, ValueCount);
         DeltaByteArrayDecoder.Decode(_deltaByteArrayLowPrefix, ValueCount, state);
         return state.ValueCount;
     }
