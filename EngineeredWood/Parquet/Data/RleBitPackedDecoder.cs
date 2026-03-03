@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace EngineeredWood.Parquet.Data;
 
 /// <summary>
@@ -75,9 +77,18 @@ internal ref struct RleBitPackedDecoder
             }
             else
             {
+                int mask = (1 << _bitWidth) - 1;
                 for (int i = 0; i < toCopy; i++)
                 {
-                    destination[offset++] = ReadBitPackedValue();
+                    int byteIdx = _bitPackedPos + (_bitOffset >> 3);
+                    int bitIdx = _bitOffset & 7;
+                    _bitOffset += _bitWidth;
+
+                    int rem = _data.Length - byteIdx;
+                    uint raw = rem >= 4
+                        ? BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIdx))
+                        : AssemblePartial(byteIdx, rem);
+                    destination[offset++] = (int)((raw >> bitIdx) & (uint)mask);
                     _remaining--;
                 }
             }
@@ -142,27 +153,35 @@ internal ref struct RleBitPackedDecoder
         if (_bitWidth == 0)
             return 0;
 
-        int byteIndex = _bitPackedPos + (_bitOffset / 8);
-        int bitIndex = _bitOffset % 8;
+        int byteIndex = _bitPackedPos + (_bitOffset >> 3);
+        int bitIndex = _bitOffset & 7;
         _bitOffset += _bitWidth;
 
-        int value = 0;
-        int bitsRead = 0;
-        while (bitsRead < _bitWidth)
+        // Fast path: read up to 4 bytes and extract value with shift+mask
+        // Safe when bitWidth <= 24 (value spans at most 4 bytes)
+        int remaining = _data.Length - byteIndex;
+        uint raw;
+        if (remaining >= 4)
         {
-            if (byteIndex >= _data.Length)
-                throw new ParquetFormatException("Unexpected end of bit-packed data.");
-
-            int bitsAvailable = 8 - bitIndex;
-            int bitsToRead = Math.Min(bitsAvailable, _bitWidth - bitsRead);
-            int mask = (1 << bitsToRead) - 1;
-            value |= ((_data[byteIndex] >> bitIndex) & mask) << bitsRead;
-
-            bitsRead += bitsToRead;
-            bitIndex = 0;
-            byteIndex++;
+            raw = BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIndex));
+        }
+        else
+        {
+            // Near end of buffer — assemble from available bytes
+            raw = 0;
+            for (int i = 0; i < remaining; i++)
+                raw |= (uint)_data[byteIndex + i] << (i * 8);
         }
 
-        return value;
+        int mask = (1 << _bitWidth) - 1;
+        return (int)((raw >> bitIndex) & (uint)mask);
+    }
+
+    private uint AssemblePartial(int byteIndex, int remaining)
+    {
+        uint raw = 0;
+        for (int i = 0; i < remaining; i++)
+            raw |= (uint)_data[byteIndex + i] << (i * 8);
+        return raw;
     }
 }

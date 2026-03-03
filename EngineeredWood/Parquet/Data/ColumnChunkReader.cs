@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using Apache.Arrow;
 using EngineeredWood.Parquet.Compression;
@@ -115,14 +116,23 @@ internal static class ColumnChunkReader
         }
         else
         {
-            decompressedBuffer = new byte[header.UncompressedPageSize];
+            int size = header.UncompressedPageSize;
+            decompressedBuffer = ArrayPool<byte>.Shared.Rent(size);
             Decompressor.Decompress(columnMeta.Codec, compressedData, decompressedBuffer);
-            plainData = decompressedBuffer;
+            plainData = decompressedBuffer.AsSpan(0, size);
         }
 
-        var decoder = new DictionaryDecoder(column.PhysicalType);
-        decoder.Load(plainData, dictHeader.NumValues, column.TypeLength ?? 0);
-        return decoder;
+        try
+        {
+            var decoder = new DictionaryDecoder(column.PhysicalType);
+            decoder.Load(plainData, dictHeader.NumValues, column.TypeLength ?? 0);
+            return decoder;
+        }
+        finally
+        {
+            if (decompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(decompressedBuffer);
+        }
     }
 
     private static int ReadDataPageV1(
@@ -148,47 +158,56 @@ internal static class ColumnChunkReader
         }
         else
         {
-            decompressedBuffer = new byte[header.UncompressedPageSize];
+            int size = header.UncompressedPageSize;
+            decompressedBuffer = ArrayPool<byte>.Shared.Rent(size);
             Decompressor.Decompress(columnMeta.Codec, compressedData, decompressedBuffer);
-            pageData = decompressedBuffer;
+            pageData = decompressedBuffer.AsSpan(0, size);
         }
 
-        int offset = 0;
-
-        // Decode repetition levels
-        if (column.MaxRepetitionLevel > 0)
+        try
         {
-            var repDest = state.ReserveRepLevels(numValues);
-            offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest);
+            int offset = 0;
+
+            // Decode repetition levels
+            if (column.MaxRepetitionLevel > 0)
+            {
+                var repDest = state.ReserveRepLevels(numValues);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest);
+            }
+            else
+            {
+                var repLevels = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, repLevels);
+            }
+
+            // Decode definition levels directly into native buffer
+            if (column.MaxDefinitionLevel > 0)
+            {
+                var defDest = state.ReserveDefLevels(numValues);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest);
+            }
+            else
+            {
+                // Skip def level decoding — no levels to write
+                var tempDef = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, tempDef);
+            }
+
+            // Count non-null values
+            int nonNullCount = CountNonNull(state, numValues, column.MaxDefinitionLevel);
+
+            // Decode values
+            var valueData = pageData.Slice(offset);
+            var encoding = dataHeader.Encoding;
+            DecodeValues(valueData, encoding, column, dictionary, nonNullCount, state);
+
+            return numValues;
         }
-        else
+        finally
         {
-            var repLevels = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
-            offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, repLevels);
+            if (decompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(decompressedBuffer);
         }
-
-        // Decode definition levels directly into native buffer
-        if (column.MaxDefinitionLevel > 0)
-        {
-            var defDest = state.ReserveDefLevels(numValues);
-            offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest);
-        }
-        else
-        {
-            // Skip def level decoding — no levels to write
-            var tempDef = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
-            offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, tempDef);
-        }
-
-        // Count non-null values
-        int nonNullCount = CountNonNull(state, numValues, column.MaxDefinitionLevel);
-
-        // Decode values
-        var valueData = pageData.Slice(offset);
-        var encoding = dataHeader.Encoding;
-        DecodeValues(valueData, encoding, column, dictionary, nonNullCount, state);
-
-        return numValues;
     }
 
     private static int ReadDataPageV2(
@@ -253,15 +272,23 @@ internal static class ColumnChunkReader
         {
             int levelsSize = v2Header.RepetitionLevelsByteLength + v2Header.DefinitionLevelsByteLength;
             int uncompressedValuesSize = header.UncompressedPageSize - levelsSize;
-            decompressedBuffer = new byte[uncompressedValuesSize];
+            decompressedBuffer = ArrayPool<byte>.Shared.Rent(uncompressedValuesSize);
             Decompressor.Decompress(columnMeta.Codec, valuesCompressed, decompressedBuffer);
-            valueData = decompressedBuffer;
+            valueData = decompressedBuffer.AsSpan(0, uncompressedValuesSize);
         }
 
-        var encoding = v2Header.Encoding;
-        DecodeValues(valueData, encoding, column, dictionary, nonNullCount, state);
+        try
+        {
+            var encoding = v2Header.Encoding;
+            DecodeValues(valueData, encoding, column, dictionary, nonNullCount, state);
 
-        return numValues;
+            return numValues;
+        }
+        finally
+        {
+            if (decompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(decompressedBuffer);
+        }
     }
 
     private static void DecodeValues(
@@ -368,9 +395,16 @@ internal static class ColumnChunkReader
             }
             case PhysicalType.ByteArray:
             {
-                var offsets = new int[count + 1];
-                PlainDecoder.DecodeByteArrays(data, offsets, out byte[] valueData, count);
-                state.AddByteArrayValues(offsets, valueData, count);
+                var offsets = ArrayPool<int>.Shared.Rent(count + 1);
+                try
+                {
+                    PlainDecoder.DecodeByteArrays(data, offsets, out byte[] valueData, count);
+                    state.AddByteArrayValues(offsets.AsSpan(0, count + 1), valueData, count);
+                }
+                finally
+                {
+                    ArrayPool<int>.Shared.Return(offsets);
+                }
                 break;
             }
             default:
@@ -497,14 +531,21 @@ internal static class ColumnChunkReader
         var rleData = data.Slice(4, rleLength);
 
         var decoder = new RleBitPackedDecoder(rleData, bitWidth: 1);
-        var ints = new int[count];
-        decoder.ReadBatch(ints);
+        var ints = ArrayPool<int>.Shared.Rent(count);
+        try
+        {
+            decoder.ReadBatch(ints.AsSpan(0, count));
 
-        Span<bool> values = count <= 1024 ? stackalloc bool[count] : new bool[count];
-        for (int i = 0; i < count; i++)
-            values[i] = ints[i] != 0;
+            Span<bool> values = count <= 1024 ? stackalloc bool[count] : new bool[count];
+            for (int i = 0; i < count; i++)
+                values[i] = ints[i] != 0;
 
-        state.AddBoolValues(values.Slice(0, count));
+            state.AddBoolValues(values.Slice(0, count));
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(ints);
+        }
     }
 
     private static void DecodeDictValues(
@@ -522,89 +563,103 @@ internal static class ColumnChunkReader
         var rleData = data.Slice(1);
         var decoder = new RleBitPackedDecoder(rleData, bitWidth);
 
-        var indicesArray = new int[count];
-        decoder.ReadBatch(indicesArray);
-        ReadOnlySpan<int> indices = indicesArray;
-
-        switch (column.PhysicalType)
+        var indicesArray = ArrayPool<int>.Shared.Rent(count);
+        try
         {
-            case PhysicalType.Boolean:
-            {
-                Span<bool> values = count <= 1024 ? stackalloc bool[count] : new bool[count];
-                for (int i = 0; i < count; i++)
-                    values[i] = dictionary.GetBoolean(indices[i]);
-                state.AddBoolValues(values.Slice(0, count));
-                break;
-            }
-            case PhysicalType.Int32:
-            {
-                var dest = state.ReserveValues<int>(count);
-                for (int i = 0; i < count; i++)
-                    dest[i] = dictionary.GetInt32(indices[i]);
-                break;
-            }
-            case PhysicalType.Int64:
-            {
-                var dest = state.ReserveValues<long>(count);
-                for (int i = 0; i < count; i++)
-                    dest[i] = dictionary.GetInt64(indices[i]);
-                break;
-            }
-            case PhysicalType.Float:
-            {
-                var dest = state.ReserveValues<float>(count);
-                for (int i = 0; i < count; i++)
-                    dest[i] = dictionary.GetFloat(indices[i]);
-                break;
-            }
-            case PhysicalType.Double:
-            {
-                var dest = state.ReserveValues<double>(count);
-                for (int i = 0; i < count; i++)
-                    dest[i] = dictionary.GetDouble(indices[i]);
-                break;
-            }
-            case PhysicalType.Int96:
-            case PhysicalType.FixedLenByteArray:
-            {
-                int typeLength = column.PhysicalType == PhysicalType.Int96 ? 12
-                    : column.TypeLength ?? throw new ParquetFormatException(
-                        "FIXED_LEN_BYTE_ARRAY column missing TypeLength.");
-                var dest = state.ReserveFixedBytes(count, typeLength);
-                for (int i = 0; i < count; i++)
-                {
-                    var bytes = dictionary.GetFixedBytes(indices[i]);
-                    bytes.CopyTo(dest.Slice(i * typeLength, typeLength));
-                }
-                break;
-            }
-            case PhysicalType.ByteArray:
-            {
-                // Build offsets and data for the batch
-                var offsets = new int[count + 1];
-                int totalLen = 0;
-                for (int i = 0; i < count; i++)
-                {
-                    offsets[i] = totalLen;
-                    totalLen += dictionary.GetByteArray(indices[i]).Length;
-                }
-                offsets[count] = totalLen;
+            decoder.ReadBatch(indicesArray.AsSpan(0, count));
+            ReadOnlySpan<int> indices = indicesArray.AsSpan(0, count);
 
-                var valueData = new byte[totalLen];
-                int pos = 0;
-                for (int i = 0; i < count; i++)
+            switch (column.PhysicalType)
+            {
+                case PhysicalType.Boolean:
                 {
-                    var bytes = dictionary.GetByteArray(indices[i]);
-                    bytes.CopyTo(valueData.AsSpan(pos));
-                    pos += bytes.Length;
+                    Span<bool> values = count <= 1024 ? stackalloc bool[count] : new bool[count];
+                    for (int i = 0; i < count; i++)
+                        values[i] = dictionary.GetBoolean(indices[i]);
+                    state.AddBoolValues(values.Slice(0, count));
+                    break;
                 }
+                case PhysicalType.Int32:
+                {
+                    var dest = state.ReserveValues<int>(count);
+                    for (int i = 0; i < count; i++)
+                        dest[i] = dictionary.GetInt32(indices[i]);
+                    break;
+                }
+                case PhysicalType.Int64:
+                {
+                    var dest = state.ReserveValues<long>(count);
+                    for (int i = 0; i < count; i++)
+                        dest[i] = dictionary.GetInt64(indices[i]);
+                    break;
+                }
+                case PhysicalType.Float:
+                {
+                    var dest = state.ReserveValues<float>(count);
+                    for (int i = 0; i < count; i++)
+                        dest[i] = dictionary.GetFloat(indices[i]);
+                    break;
+                }
+                case PhysicalType.Double:
+                {
+                    var dest = state.ReserveValues<double>(count);
+                    for (int i = 0; i < count; i++)
+                        dest[i] = dictionary.GetDouble(indices[i]);
+                    break;
+                }
+                case PhysicalType.Int96:
+                case PhysicalType.FixedLenByteArray:
+                {
+                    int typeLength = column.PhysicalType == PhysicalType.Int96 ? 12
+                        : column.TypeLength ?? throw new ParquetFormatException(
+                            "FIXED_LEN_BYTE_ARRAY column missing TypeLength.");
+                    var dest = state.ReserveFixedBytes(count, typeLength);
+                    for (int i = 0; i < count; i++)
+                    {
+                        var bytes = dictionary.GetFixedBytes(indices[i]);
+                        bytes.CopyTo(dest.Slice(i * typeLength, typeLength));
+                    }
+                    break;
+                }
+                case PhysicalType.ByteArray:
+                {
+                    // Build offsets and data for the batch
+                    var offsets = ArrayPool<int>.Shared.Rent(count + 1);
+                    try
+                    {
+                        int totalLen = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            offsets[i] = totalLen;
+                            totalLen += dictionary.GetByteArray(indices[i]).Length;
+                        }
+                        offsets[count] = totalLen;
 
-                state.AddByteArrayValues(offsets, valueData, count);
-                break;
+                        var valueData = new byte[totalLen];
+                        int pos = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var bytes = dictionary.GetByteArray(indices[i]);
+                            bytes.CopyTo(valueData.AsSpan(pos));
+                            pos += bytes.Length;
+                        }
+
+                        state.AddByteArrayValues(offsets.AsSpan(0, count + 1), valueData, count);
+                    }
+                    finally
+                    {
+                        ArrayPool<int>.Shared.Return(offsets);
+                    }
+                    break;
+                }
+                default:
+                    throw new NotSupportedException(
+                        $"Physical type '{column.PhysicalType}' is not supported for dictionary decoding.");
             }
-            default:
-                throw new NotSupportedException(
-                    $"Physical type '{column.PhysicalType}' is not supported for dictionary decoding.");
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(indicesArray);
         }
     }
 
