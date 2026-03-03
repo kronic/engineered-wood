@@ -648,25 +648,29 @@ internal static class ColumnChunkReader
                 }
                 case PhysicalType.ByteArray:
                 {
-                    // Build offsets and data for the batch
+                    // Single-pass: compute lengths then copy
                     var offsets = ArrayPool<int>.Shared.Rent(count + 1);
                     try
                     {
+                        // Cache lengths to avoid double dictionary lookup
+                        Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
                         int totalLen = 0;
                         for (int i = 0; i < count; i++)
                         {
-                            offsets[i] = totalLen;
-                            totalLen += dictionary.GetByteArray(indices[i]).Length;
+                            int len = dictionary.GetByteArray(indices[i]).Length;
+                            lengths[i] = len;
+                            totalLen += len;
                         }
-                        offsets[count] = totalLen;
 
                         var valueData = new byte[totalLen];
                         int pos = 0;
+                        offsets[0] = 0;
                         for (int i = 0; i < count; i++)
                         {
-                            var bytes = dictionary.GetByteArray(indices[i]);
-                            bytes.CopyTo(valueData.AsSpan(pos));
-                            pos += bytes.Length;
+                            int len = lengths[i];
+                            dictionary.GetByteArray(indices[i]).CopyTo(valueData.AsSpan(pos));
+                            pos += len;
+                            offsets[i + 1] = pos;
                         }
 
                         state.AddByteArrayValues(offsets.AsSpan(0, count + 1), valueData, count);
