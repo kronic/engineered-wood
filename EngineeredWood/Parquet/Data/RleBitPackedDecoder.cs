@@ -77,6 +77,30 @@ internal ref struct RleBitPackedDecoder
             }
             else
             {
+                // Specialise for bitWidth == 1 (def levels with maxDefLevel == 1):
+                // unpack 8 values per byte instead of 1 value per 4-byte read.
+                if (_bitWidth == 1 && (_bitOffset & 7) == 0)
+                {
+                    int byteStart = _bitPackedPos + (_bitOffset >> 3);
+                    while (toCopy >= 8)
+                    {
+                        byte packed = _data[byteStart++];
+                        destination[offset]     =  packed        & 1;
+                        destination[offset + 1] = (packed >> 1) & 1;
+                        destination[offset + 2] = (packed >> 2) & 1;
+                        destination[offset + 3] = (packed >> 3) & 1;
+                        destination[offset + 4] = (packed >> 4) & 1;
+                        destination[offset + 5] = (packed >> 5) & 1;
+                        destination[offset + 6] = (packed >> 6) & 1;
+                        destination[offset + 7] = (packed >> 7) & 1;
+                        offset += 8;
+                        _bitOffset += 8;
+                        _remaining -= 8;
+                        toCopy -= 8;
+                    }
+                }
+
+                // General path for remaining values or other bit widths
                 int mask = (1 << _bitWidth) - 1;
                 for (int i = 0; i < toCopy; i++)
                 {

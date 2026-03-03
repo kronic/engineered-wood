@@ -193,16 +193,12 @@ internal static class ColumnChunkReader
             var repEncoding = dataHeader.RepetitionLevelEncoding;
             var defEncoding = dataHeader.DefinitionLevelEncoding;
 
-            // Decode repetition levels
+            // Decode repetition levels (when maxRepLevel == 0 there is no
+            // encoded level data in V1 pages, so skip entirely)
             if (column.MaxRepetitionLevel > 0)
             {
                 var repDest = state.ReserveRepLevels(numValues);
                 offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest, repEncoding);
-            }
-            else
-            {
-                var repLevels = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
-                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, repLevels, repEncoding);
             }
 
             // Decode definition levels directly into native buffer
@@ -210,12 +206,6 @@ internal static class ColumnChunkReader
             {
                 var defDest = state.ReserveDefLevels(numValues);
                 offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest, defEncoding);
-            }
-            else
-            {
-                // Skip def level decoding — no levels to write
-                var tempDef = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
-                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), 0, numValues, tempDef, defEncoding);
             }
 
             // Count non-null values

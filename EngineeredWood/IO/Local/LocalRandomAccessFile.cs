@@ -18,7 +18,7 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
     {
         _allocator = allocator ?? PooledBufferAllocator.Default;
         _handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
-            FileShare.Read, FileOptions.Asynchronous);
+            FileShare.Read);
     }
 
     public ValueTask<long> GetLengthAsync(CancellationToken cancellationToken = default)
@@ -33,18 +33,19 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
         return new ValueTask<long>(length);
     }
 
-    public async ValueTask<IMemoryOwner<byte>> ReadAsync(
+    public ValueTask<IMemoryOwner<byte>> ReadAsync(
         FileRange range, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (range.Length == 0)
-            return _allocator.Allocate(0);
+            return new ValueTask<IMemoryOwner<byte>>(_allocator.Allocate(0));
 
         IMemoryOwner<byte> buffer = _allocator.Allocate(checked((int)range.Length));
         try
         {
-            await ReadExactAsync(buffer.Memory, range.Offset, cancellationToken)
-                .ConfigureAwait(false);
-            return buffer;
+            ReadExact(buffer.Memory.Span, range.Offset);
+            return new ValueTask<IMemoryOwner<byte>>(buffer);
         }
         catch
         {
@@ -53,37 +54,44 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
         }
     }
 
-    public async ValueTask<IReadOnlyList<IMemoryOwner<byte>>> ReadRangesAsync(
+    public ValueTask<IReadOnlyList<IMemoryOwner<byte>>> ReadRangesAsync(
         IReadOnlyList<FileRange> ranges, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (ranges.Count == 0)
-            return [];
+            return new ValueTask<IReadOnlyList<IMemoryOwner<byte>>>(
+                (IReadOnlyList<IMemoryOwner<byte>>)[]);
 
-        if (ranges.Count == 1)
-        {
-            IMemoryOwner<byte> single = await ReadAsync(ranges[0], cancellationToken)
-                .ConfigureAwait(false);
-            return [single];
-        }
-
+        // For local files, sequential sync reads are fastest: no thread-pool
+        // scheduling overhead and the OS page cache serves contiguous ranges efficiently.
         var buffers = new IMemoryOwner<byte>[ranges.Count];
         try
         {
-            var tasks = new Task[ranges.Count];
             for (int i = 0; i < ranges.Count; i++)
             {
-                int index = i;
-                FileRange range = ranges[index];
-                tasks[index] = Task.Run(async () =>
+                var range = ranges[i];
+                if (range.Length == 0)
                 {
-                    IMemoryOwner<byte> buf = await ReadAsync(range, cancellationToken)
-                        .ConfigureAwait(false);
-                    buffers[index] = buf;
-                }, cancellationToken);
+                    buffers[i] = _allocator.Allocate(0);
+                    continue;
+                }
+
+                var buf = _allocator.Allocate(checked((int)range.Length));
+                try
+                {
+                    ReadExact(buf.Memory.Span, range.Offset);
+                    buffers[i] = buf;
+                }
+                catch
+                {
+                    buf.Dispose();
+                    throw;
+                }
             }
 
-            await Task.WhenAll(tasks).ConfigureAwait(false);
-            return buffers;
+            return new ValueTask<IReadOnlyList<IMemoryOwner<byte>>>(
+                (IReadOnlyList<IMemoryOwner<byte>>)buffers);
         }
         catch
         {
@@ -93,15 +101,13 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
         }
     }
 
-    private async ValueTask ReadExactAsync(
-        Memory<byte> buffer, long offset, CancellationToken cancellationToken)
+    private void ReadExact(Span<byte> buffer, long offset)
     {
         int totalRead = 0;
         while (totalRead < buffer.Length)
         {
-            int bytesRead = await RandomAccess.ReadAsync(
-                _handle, buffer[totalRead..], offset + totalRead, cancellationToken)
-                .ConfigureAwait(false);
+            int bytesRead = RandomAccess.Read(
+                _handle, buffer[totalRead..], offset + totalRead);
 
             if (bytesRead == 0)
                 throw new IOException(
