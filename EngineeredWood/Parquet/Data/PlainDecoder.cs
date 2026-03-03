@@ -104,7 +104,10 @@ internal static class PlainDecoder
         out byte[] values,
         int count)
     {
-        // First pass: compute total data size
+        // Single pass: scan lengths to compute total size, then bulk-copy.
+        // Lengths array avoids re-reading each 4-byte header in a second pass.
+        Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
+
         int pos = 0;
         int totalDataSize = 0;
         for (int i = 0; i < count; i++)
@@ -112,22 +115,23 @@ internal static class PlainDecoder
             if (pos + 4 > data.Length)
                 throw new ParquetFormatException("Unexpected end of PLAIN ByteArray data.");
             int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(pos));
+            lengths[i] = len;
             pos += 4 + len;
             totalDataSize += len;
         }
 
         values = new byte[totalDataSize];
 
-        // Second pass: copy data and build offsets
-        pos = 0;
+        // Build offsets and copy data in one pass using cached lengths
         int dataPos = 0;
+        int srcPos = 0;
         offsets[0] = 0;
         for (int i = 0; i < count; i++)
         {
-            int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(pos));
-            pos += 4;
-            data.Slice(pos, len).CopyTo(values.AsSpan(dataPos));
-            pos += len;
+            int len = lengths[i];
+            srcPos += 4;
+            data.Slice(srcPos, len).CopyTo(values.AsSpan(dataPos));
+            srcPos += len;
             dataPos += len;
             offsets[i + 1] = dataPos;
         }
