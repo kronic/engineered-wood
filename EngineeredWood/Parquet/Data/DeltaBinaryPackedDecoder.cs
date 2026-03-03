@@ -64,8 +64,8 @@ internal ref struct DeltaBinaryPackedDecoder
         destination[0] = lastInt;
         int valuesDecoded = 1;
 
-        var bitWidths = new byte[_miniblockCount];
-        var unpacked = new long[_valuesPerMiniblock];
+        Span<byte> bitWidths = _miniblockCount <= 64 ? stackalloc byte[_miniblockCount] : new byte[_miniblockCount];
+        Span<long> unpacked = _valuesPerMiniblock <= 256 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
 
         while (valuesDecoded < _totalValueCount)
         {
@@ -112,8 +112,8 @@ internal ref struct DeltaBinaryPackedDecoder
         destination[0] = _lastValue;
         int valuesDecoded = 1;
 
-        var bitWidths = new byte[_miniblockCount];
-        var unpacked = new long[_valuesPerMiniblock];
+        Span<byte> bitWidths = _miniblockCount <= 64 ? stackalloc byte[_miniblockCount] : new byte[_miniblockCount];
+        Span<long> unpacked = _valuesPerMiniblock <= 256 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
 
         while (valuesDecoded < _totalValueCount)
         {
@@ -154,7 +154,7 @@ internal ref struct DeltaBinaryPackedDecoder
     /// Each value is extracted with a single <c>ulong</c> read, right-shift, and mask —
     /// no per-byte loop. Advances <see cref="_pos"/> by the full miniblock byte size.
     /// </summary>
-    private void UnpackValues(long[] output, int count, int bitWidth)
+    private void UnpackValues(scoped Span<long> output, int count, int bitWidth)
     {
         ulong mask = bitWidth == 64 ? ulong.MaxValue : (1UL << bitWidth) - 1;
         int bitOffset = _pos * 8;
