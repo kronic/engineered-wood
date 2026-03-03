@@ -12,7 +12,7 @@ namespace EngineeredWood.Parquet;
 /// <summary>
 /// Reads Parquet file metadata and schema via an <see cref="IRandomAccessFile"/>.
 /// </summary>
-public sealed class ParquetFileReader : IAsyncDisposable, IDisposable
+public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 {
     private static readonly byte[] Par1Magic = "PAR1"u8.ToArray();
     private const int MagicSize = 4;
@@ -452,6 +452,9 @@ public sealed class ParquetFileReader : IAsyncDisposable, IDisposable
         return (columns, chunks);
     }
 
+    [GeneratedRegex(@"version\s+(\d+)\.(\d+)\.(\d+)")]
+    private static partial Regex VersionRegex();
+
     /// <summary>
     /// Detects whether the file was written by a parquet-mr version affected by PARQUET-816,
     /// where TotalCompressedSize excludes the dictionary page header.
@@ -467,7 +470,7 @@ public sealed class ParquetFileReader : IAsyncDisposable, IDisposable
             return false;
 
         // "parquet-mr" with no version → pre-1.0, definitely buggy
-        var match = Regex.Match(createdBy, @"version\s+(\d+)\.(\d+)\.(\d+)");
+        var match = VersionRegex().Match(createdBy);
         if (!match.Success)
             return true;
 
