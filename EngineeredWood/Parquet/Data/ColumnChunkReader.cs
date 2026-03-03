@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.Intrinsics;
 using Apache.Arrow;
 using EngineeredWood.Parquet.Compression;
 using EngineeredWood.Parquet.Metadata;
@@ -697,7 +698,27 @@ internal static class ColumnChunkReader
         var pageDefs = allDefs.Slice(allDefs.Length - numValues);
 
         int count = 0;
-        for (int i = 0; i < pageDefs.Length; i++)
+        int i = 0;
+
+        if (Vector256.IsHardwareAccelerated && pageDefs.Length >= Vector256<int>.Count)
+        {
+            var target = Vector256.Create(maxDefLevel);
+            var accumulated = Vector256<int>.Zero;
+
+            for (; i + Vector256<int>.Count <= pageDefs.Length; i += Vector256<int>.Count)
+            {
+                var v = Vector256.LoadUnsafe(
+                    ref System.Runtime.InteropServices.MemoryMarshal.GetReference(pageDefs), (nuint)i);
+                var matches = Vector256.Equals(v, target);
+                // Matches are -1 (all bits set) for equal, 0 otherwise. Subtract to accumulate.
+                accumulated -= matches;
+            }
+
+            // Horizontal sum of the 8 int lanes
+            count = Vector256.Sum(accumulated);
+        }
+
+        for (; i < pageDefs.Length; i++)
         {
             if (pageDefs[i] == maxDefLevel)
                 count++;
