@@ -1,7 +1,9 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
+using Apache.Arrow.Memory;
 using Apache.Arrow.Types;
 
 namespace EngineeredWood.Parquet.Data;
@@ -87,33 +89,42 @@ internal static class ArrowArrayBuilder
     private static IArrowArray BuildDenseFixedArray<T>(ColumnBuildState state, IArrowType arrowType, int numValues)
         where T : unmanaged
     {
-        var denseValues = state.GetValueSpan<T>();
         var defLevels = state.DefLevelSpan;
         int nullCount = numValues - state.ValueCount;
+        int nonNullCount = state.ValueCount;
 
-        using var scatteredBuf = new NativeBuffer<T>(numValues, zeroFill: false);
-        using var bitmapBuf = new NativeBuffer<byte>((numValues + 7) / 8);
-
-        var scattered = scatteredBuf.Span;
-        var bitmap = bitmapBuf.ByteSpan;
-
-        int valueIdx = 0;
-        for (int i = 0; i < numValues; i++)
+        int bitmapBytes = (numValues + 7) / 8;
+        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
+        try
         {
-            if (defLevels[i] == state.MaxDefLevel)
+            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
+            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
+
+            // In-place reverse scatter: reuse the dense buffer, walking right-to-left
+            // so each value moves rightward (read index always <= write index).
+            var values = state.GetWritableValueSpan<T>();
+            int readIdx = nonNullCount - 1;
+            for (int i = numValues - 1; i >= 0 && readIdx >= 0; i--)
             {
-                scattered[i] = denseValues[valueIdx++];
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                if (defLevels[i] == state.MaxDefLevel)
+                {
+                    values[i] = values[readIdx--];
+                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                }
             }
+
+            var valueArrow = state.BuildValueBuffer();
+            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
+            bitmapOwner = null;
+
+            var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
+                new[] { bitmapArrow, valueArrow });
+            return ArrowArrayFactory.BuildArray(data);
         }
-
-        var valueArrow = scatteredBuf.Build();
-        var bitmapArrow = bitmapBuf.Build();
-        state.DisposeValueBuffer();
-
-        var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
-            new[] { bitmapArrow, valueArrow });
-        return ArrowArrayFactory.BuildArray(data);
+        finally
+        {
+            bitmapOwner?.Dispose();
+        }
     }
 
     private static IArrowArray BuildDenseNarrowIntArray<TNarrow>(ColumnBuildState state, IArrowType arrowType, int numValues)
@@ -305,35 +316,45 @@ internal static class ArrowArrayBuilder
             return ArrowArrayFactory.BuildArray(arrayData);
         }
 
-        // Nullable: scatter dense values into row-position slots, build validity bitmap
-        var denseValues = state.GetValueSpan<T>();
         int nonNullCount = state.ValueCount;
         int nullCount = rowCount - nonNullCount;
         var defLevels = state.DefLevelSpan;
 
-        using var scatteredBuf = new NativeBuffer<T>(rowCount, zeroFill: false);
-        using var bitmapBuf = new NativeBuffer<byte>((rowCount + 7) / 8);
-
-        var scattered = scatteredBuf.Span;
-        var bitmap = bitmapBuf.ByteSpan;
-
-        int valueIdx = 0;
-        for (int i = 0; i < rowCount; i++)
+        // Bitmap: use pooled managed array instead of a native alloc
+        int bitmapBytes = (rowCount + 7) / 8;
+        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
+        try
         {
-            if (defLevels[i] == state.MaxDefLevel)
+            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
+            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
+
+            // In-place reverse scatter: reuse the existing native value buffer as the
+            // scatter target — no second allocation needed. Dense values occupy [0, nonNullCount);
+            // walking right-to-left guarantees each value only moves rightward, so reads
+            // never alias writes.
+            var values = state.GetWritableValueSpan<T>();
+            int readIdx = nonNullCount - 1;
+            for (int i = rowCount - 1; i >= 0 && readIdx >= 0; i--)
             {
-                scattered[i] = denseValues[valueIdx++];
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                if (defLevels[i] == state.MaxDefLevel)
+                {
+                    values[i] = values[readIdx--];
+                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                }
             }
+
+            var valueArrow = state.BuildValueBuffer(); // zero-copy: transfers the now-scattered buffer
+            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
+            bitmapOwner = null; // Arrow took ownership
+
+            var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
+                new[] { bitmapArrow, valueArrow });
+            return ArrowArrayFactory.BuildArray(data);
         }
-
-        var valueArrow = scatteredBuf.Build();
-        var bitmapArrow = bitmapBuf.Build();
-        state.DisposeValueBuffer();
-
-        var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
-            new[] { bitmapArrow, valueArrow });
-        return ArrowArrayFactory.BuildArray(data);
+        finally
+        {
+            bitmapOwner?.Dispose();
+        }
     }
 
     /// <summary>
@@ -776,12 +797,12 @@ internal sealed class ColumnBuildState : IDisposable
     internal readonly int MaxDefLevel;
     internal readonly int MaxRepLevel;
 
-    // Definition levels (nullable columns only)
-    private NativeBuffer<int>? _defLevels;
+    // Definition levels (nullable columns only) — pooled managed array, never transferred to Arrow
+    private int[]? _defLevels;
     private int _defLevelCount;
 
-    // Repetition levels (repeated columns only)
-    private NativeBuffer<int>? _repLevels;
+    // Repetition levels (repeated columns only) — pooled managed array, never transferred to Arrow
+    private int[]? _repLevels;
     private int _repLevelCount;
 
     // Value buffer: stores dense non-null values for fixed-width types and fixed-len byte arrays
@@ -826,13 +847,13 @@ internal sealed class ColumnBuildState : IDisposable
 
         if (maxDefLevel > 0)
         {
-            _defLevels = new NativeBuffer<int>(capacity, zeroFill: false);
+            _defLevels = ArrayPool<int>.Shared.Rent(capacity);
             _defLevelCount = 0;
         }
 
         if (maxRepLevel > 0)
         {
-            _repLevels = new NativeBuffer<int>(capacity, zeroFill: false);
+            _repLevels = ArrayPool<int>.Shared.Rent(capacity);
             _repLevelCount = 0;
         }
 
@@ -879,13 +900,13 @@ internal sealed class ColumnBuildState : IDisposable
 
     /// <summary>Returns true if the value at position <paramref name="rowIndex"/> is null.</summary>
     public bool IsNull(int rowIndex) =>
-        MaxDefLevel > 0 && _defLevels!.Span[rowIndex] < MaxDefLevel;
+        MaxDefLevel > 0 && _defLevels![rowIndex] < MaxDefLevel;
 
     /// <summary>Gets the definition levels span (for the build phase).</summary>
-    public ReadOnlySpan<int> DefLevelSpan => _defLevels!.Span.Slice(0, _defLevelCount);
+    public ReadOnlySpan<int> DefLevelSpan => _defLevels.AsSpan(0, _defLevelCount);
 
     /// <summary>Gets the repetition levels span (for the build phase).</summary>
-    public ReadOnlySpan<int> RepLevelSpan => _repLevels!.Span.Slice(0, _repLevelCount);
+    public ReadOnlySpan<int> RepLevelSpan => _repLevels.AsSpan(0, _repLevelCount);
 
     /// <summary>
     /// Reserves space for <paramref name="count"/> definition levels and returns a writable span.
@@ -893,7 +914,7 @@ internal sealed class ColumnBuildState : IDisposable
     public Span<int> ReserveDefLevels(int count)
     {
         if (_defLevels == null) return Span<int>.Empty;
-        var span = _defLevels.Span.Slice(_defLevelCount, count);
+        var span = _defLevels.AsSpan(_defLevelCount, count);
         _defLevelCount += count;
         return span;
     }
@@ -904,7 +925,7 @@ internal sealed class ColumnBuildState : IDisposable
     public Span<int> ReserveRepLevels(int count)
     {
         if (_repLevels == null) return Span<int>.Empty;
-        var span = _repLevels.Span.Slice(_repLevelCount, count);
+        var span = _repLevels.AsSpan(_repLevelCount, count);
         _repLevelCount += count;
         return span;
     }
@@ -989,6 +1010,17 @@ internal sealed class ColumnBuildState : IDisposable
         return MemoryMarshal.Cast<byte, T>(bytes);
     }
 
+    /// <summary>
+    /// Gets a writable span over the FULL value buffer capacity (rowCount elements).
+    /// Used for in-place scatter during nullable array assembly — the dense values
+    /// at [0, ValueCount) are scattered rightward into their sparse row positions.
+    /// </summary>
+    internal Span<T> GetWritableValueSpan<T>() where T : unmanaged
+    {
+        if (_valueBuffer == null) return Span<T>.Empty;
+        return MemoryMarshal.Cast<byte, T>(_valueBuffer.ByteSpan);
+    }
+
     /// <summary>Gets a span over the raw value bytes (for boolean and fixed-size binary build).</summary>
     public ReadOnlySpan<byte> ValueByteSpan =>
         _valueBuffer == null ? ReadOnlySpan<byte>.Empty
@@ -1038,12 +1070,21 @@ internal sealed class ColumnBuildState : IDisposable
 
     public void Dispose()
     {
-        _defLevels?.Dispose();
-        _repLevels?.Dispose();
+        if (_defLevels != null)
+        {
+            ArrayPool<int>.Shared.Return(_defLevels);
+            _defLevels = null;
+        }
+        if (_repLevels != null)
+        {
+            ArrayPool<int>.Shared.Return(_repLevels);
+            _repLevels = null;
+        }
         _valueBuffer?.Dispose();
         _offsetsBuffer?.Dispose();
         _dataBuffer?.Dispose();
     }
+
 }
 
 /// <summary>
