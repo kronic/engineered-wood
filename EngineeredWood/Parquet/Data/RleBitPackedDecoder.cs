@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Numerics;
 
 namespace EngineeredWood.Parquet.Data;
 
@@ -113,6 +114,76 @@ internal ref struct RleBitPackedDecoder
                         ? BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIdx))
                         : AssemblePartial(byteIdx, rem);
                     destination[offset++] = (int)((raw >> bitIdx) & (uint)mask);
+                    _remaining--;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads <paramref name="count"/> values into the destination span and simultaneously
+    /// counts how many decoded values equal <paramref name="matchValue"/>.
+    /// Avoids a separate pass to count non-null values after level decoding.
+    /// </summary>
+    public void ReadBatch(Span<int> destination, int matchValue, out int matchCount)
+    {
+        matchCount = 0;
+        int offset = 0;
+        while (offset < destination.Length)
+        {
+            if (_remaining == 0)
+                ReadNextGroup();
+
+            int toCopy = Math.Min(_remaining, destination.Length - offset);
+
+            if (_isRle)
+            {
+                destination.Slice(offset, toCopy).Fill(_rleValue);
+                if (_rleValue == matchValue) matchCount += toCopy;
+                _remaining -= toCopy;
+                offset += toCopy;
+            }
+            else
+            {
+                if (_bitWidth == 1 && (_bitOffset & 7) == 0)
+                {
+                    int byteStart = _bitPackedPos + (_bitOffset >> 3);
+                    while (toCopy >= 8)
+                    {
+                        byte packed = _data[byteStart++];
+                        destination[offset]     =  packed        & 1;
+                        destination[offset + 1] = (packed >> 1) & 1;
+                        destination[offset + 2] = (packed >> 2) & 1;
+                        destination[offset + 3] = (packed >> 3) & 1;
+                        destination[offset + 4] = (packed >> 4) & 1;
+                        destination[offset + 5] = (packed >> 5) & 1;
+                        destination[offset + 6] = (packed >> 6) & 1;
+                        destination[offset + 7] = (packed >> 7) & 1;
+                        // For maxDefLevel == 1 (most common case), PopCount counts set bits.
+                        // For maxDefLevel == 0 the whole column is non-nullable and this path isn't taken.
+                        if (matchValue == 1)      matchCount += BitOperations.PopCount(packed);
+                        else if (matchValue == 0) matchCount += 8 - BitOperations.PopCount(packed);
+                        offset += 8;
+                        _bitOffset += 8;
+                        _remaining -= 8;
+                        toCopy -= 8;
+                    }
+                }
+
+                int mask = (1 << _bitWidth) - 1;
+                for (int i = 0; i < toCopy; i++)
+                {
+                    int byteIdx = _bitPackedPos + (_bitOffset >> 3);
+                    int bitIdx = _bitOffset & 7;
+                    _bitOffset += _bitWidth;
+
+                    int rem = _data.Length - byteIdx;
+                    uint raw = rem >= 4
+                        ? BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIdx))
+                        : AssemblePartial(byteIdx, rem);
+                    int val = (int)((raw >> bitIdx) & (uint)mask);
+                    destination[offset++] = val;
+                    if (val == matchValue) matchCount++;
                     _remaining--;
                 }
             }

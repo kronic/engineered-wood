@@ -15,6 +15,10 @@ internal static class LevelDecoder
     /// <param name="maxLevel">Maximum level value for this column.</param>
     /// <param name="valueCount">Number of values to decode.</param>
     /// <param name="levels">Destination span for decoded levels.</param>
+    /// <param name="matchCount">
+    /// Output: number of decoded levels equal to <paramref name="maxLevel"/>.
+    /// Equals <paramref name="valueCount"/> when <paramref name="maxLevel"/> is 0 (non-nullable column).
+    /// </param>
     /// <param name="encoding">
     /// Level encoding from the page header. <see cref="Encoding.Rle"/> uses
     /// RLE/Bit-Packing Hybrid; <see cref="Encoding.BitPacked"/> uses the
@@ -26,16 +30,18 @@ internal static class LevelDecoder
         int maxLevel,
         int valueCount,
         Span<int> levels,
+        out int matchCount,
         Encoding encoding = Encoding.Rle)
     {
         if (maxLevel == 0)
         {
             levels.Slice(0, valueCount).Clear();
+            matchCount = valueCount;
             return 0;
         }
 
         if (encoding == Encoding.BitPacked)
-            return DecodeBitPacked(data, maxLevel, valueCount, levels);
+            return DecodeBitPacked(data, maxLevel, valueCount, levels, out matchCount);
 
         if (data.Length < 4)
             throw new ParquetFormatException("Not enough data for V1 level length prefix.");
@@ -48,7 +54,7 @@ internal static class LevelDecoder
         int bitWidth = GetBitWidth(maxLevel);
         var rleData = data.Slice(4, encodedLength);
         var decoder = new RleBitPackedDecoder(rleData, bitWidth);
-        decoder.ReadBatch(levels.Slice(0, valueCount));
+        decoder.ReadBatch(levels.Slice(0, valueCount), maxLevel, out matchCount);
 
         return 4 + encodedLength;
     }
@@ -57,21 +63,26 @@ internal static class LevelDecoder
     /// Decodes levels from a V2 data page. The format is raw RLE/bit-packed data
     /// with no length prefix (the byte length is provided in the page header).
     /// </summary>
+    /// <param name="matchCount">
+    /// Output: number of decoded levels equal to <paramref name="maxLevel"/>.
+    /// </param>
     public static void DecodeV2(
         ReadOnlySpan<byte> data,
         int maxLevel,
         int valueCount,
-        Span<int> levels)
+        Span<int> levels,
+        out int matchCount)
     {
         if (maxLevel == 0)
         {
             levels.Slice(0, valueCount).Clear();
+            matchCount = valueCount;
             return;
         }
 
         int bitWidth = GetBitWidth(maxLevel);
         var decoder = new RleBitPackedDecoder(data, bitWidth);
-        decoder.ReadBatch(levels.Slice(0, valueCount));
+        decoder.ReadBatch(levels.Slice(0, valueCount), maxLevel, out matchCount);
     }
 
     /// <summary>
@@ -92,7 +103,8 @@ internal static class LevelDecoder
         ReadOnlySpan<byte> data,
         int maxLevel,
         int valueCount,
-        Span<int> levels)
+        Span<int> levels,
+        out int matchCount)
     {
         int bitWidth = GetBitWidth(maxLevel);
         int byteLength = (valueCount * bitWidth + 7) / 8;
@@ -103,6 +115,7 @@ internal static class LevelDecoder
 
         var packed = data.Slice(0, byteLength);
         int mask = (1 << bitWidth) - 1;
+        matchCount = 0;
 
         for (int i = 0; i < valueCount; i++)
         {
@@ -117,7 +130,9 @@ internal static class LevelDecoder
                 : AssemblePartialBigEndian(packed, byteIdx, remaining);
 
             int shift = 32 - bitIdx - bitWidth;
-            levels[i] = (int)((raw >> shift) & (uint)mask);
+            int val = (int)((raw >> shift) & (uint)mask);
+            levels[i] = val;
+            if (val == maxLevel) matchCount++;
         }
 
         return byteLength;

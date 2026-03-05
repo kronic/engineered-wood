@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Runtime.Intrinsics;
 using Apache.Arrow;
 using EngineeredWood.Parquet.Compression;
 using EngineeredWood.Parquet.Metadata;
@@ -198,18 +197,20 @@ internal static class ColumnChunkReader
             if (column.MaxRepetitionLevel > 0)
             {
                 var repDest = state.ReserveRepLevels(numValues);
-                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest, repEncoding);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest, out _, repEncoding);
             }
 
-            // Decode definition levels directly into native buffer
+            // Decode definition levels and count non-nulls in a single pass
+            int nonNullCount;
             if (column.MaxDefinitionLevel > 0)
             {
                 var defDest = state.ReserveDefLevels(numValues);
-                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest, defEncoding);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest, out nonNullCount, defEncoding);
             }
-
-            // Count non-null values
-            int nonNullCount = CountNonNull(state, numValues, column.MaxDefinitionLevel);
+            else
+            {
+                nonNullCount = numValues;
+            }
 
             // Decode values
             var valueData = pageData.Slice(offset);
@@ -245,29 +246,29 @@ internal static class ColumnChunkReader
             var repDest = state.ReserveRepLevels(numValues);
             LevelDecoder.DecodeV2(
                 rawData.Slice(offset, v2Header.RepetitionLevelsByteLength),
-                column.MaxRepetitionLevel, numValues, repDest);
+                column.MaxRepetitionLevel, numValues, repDest, out _);
         }
         else if (v2Header.RepetitionLevelsByteLength > 0)
         {
             var tempRep = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
             LevelDecoder.DecodeV2(
                 rawData.Slice(offset, v2Header.RepetitionLevelsByteLength),
-                column.MaxRepetitionLevel, numValues, tempRep);
+                column.MaxRepetitionLevel, numValues, tempRep, out _);
         }
         offset += v2Header.RepetitionLevelsByteLength;
 
-        // Decode definition levels directly into native buffer
+        // Decode definition levels; non-null count is free from the V2 page header.
         if (column.MaxDefinitionLevel > 0)
         {
             var defDest = state.ReserveDefLevels(numValues);
             LevelDecoder.DecodeV2(
                 rawData.Slice(offset, v2Header.DefinitionLevelsByteLength),
-                column.MaxDefinitionLevel, numValues, defDest);
+                column.MaxDefinitionLevel, numValues, defDest, out _);
         }
         offset += v2Header.DefinitionLevelsByteLength;
 
-        // Count non-null values
-        int nonNullCount = CountNonNull(state, numValues, column.MaxDefinitionLevel);
+        // V2 page headers carry NumNulls directly — no need to scan def levels again.
+        int nonNullCount = numValues - v2Header.NumNulls;
 
         // V2: only values portion is compressed (if is_compressed, default true)
         var valuesCompressed = rawData.Slice(offset);
@@ -680,43 +681,5 @@ internal static class ColumnChunkReader
         {
             ArrayPool<int>.Shared.Return(indicesArray);
         }
-    }
-
-    private static int CountNonNull(ColumnBuildState state, int numValues, int maxDefLevel)
-    {
-        if (maxDefLevel == 0)
-            return numValues;
-
-        // Read the last numValues def levels from the state
-        var allDefs = state.DefLevelSpan;
-        var pageDefs = allDefs.Slice(allDefs.Length - numValues);
-
-        int count = 0;
-        int i = 0;
-
-        if (Vector256.IsHardwareAccelerated && pageDefs.Length >= Vector256<int>.Count)
-        {
-            var target = Vector256.Create(maxDefLevel);
-            var accumulated = Vector256<int>.Zero;
-
-            for (; i + Vector256<int>.Count <= pageDefs.Length; i += Vector256<int>.Count)
-            {
-                var v = Vector256.LoadUnsafe(
-                    ref System.Runtime.InteropServices.MemoryMarshal.GetReference(pageDefs), (nuint)i);
-                var matches = Vector256.Equals(v, target);
-                // Matches are -1 (all bits set) for equal, 0 otherwise. Subtract to accumulate.
-                accumulated -= matches;
-            }
-
-            // Horizontal sum of the 8 int lanes
-            count = Vector256.Sum(accumulated);
-        }
-
-        for (; i < pageDefs.Length; i++)
-        {
-            if (pageDefs[i] == maxDefLevel)
-                count++;
-        }
-        return count;
     }
 }
