@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using EngineeredWood.IO.Local;
-using EngineeredWood.Parquet;
 using Parquet;
 using Parquet.Schema;
 
@@ -65,22 +64,6 @@ public class RowGroupReadBenchmarks
         using var file = new LocalRandomAccessFile(FilePath);
         using var reader = new ParquetFileReader(file);
         return await reader.ReadRowGroupIncrementalParallelAsync(0).ConfigureAwait(false);
-    }
-
-    [Benchmark(Description = "EW_AsColumns (no Arrow)")]
-    public async Task<ParquetColumn[]> EW_AsColumns()
-    {
-        using var file = new LocalRandomAccessFile(FilePath);
-        using var reader = new ParquetFileReader(file);
-        return await reader.ReadRowGroupAsColumnsAsync(0).ConfigureAwait(false);
-    }
-
-    [Benchmark(Description = "EW_DecodeOnly (no output)")]
-    public async Task<int> EW_DecodeOnly()
-    {
-        using var file = new LocalRandomAccessFile(FilePath);
-        using var reader = new ParquetFileReader(file);
-        return await reader.ReadRowGroupDecodeOnlyAsync(0).ConfigureAwait(false);
     }
 
     [Benchmark(Description = "ParquetSharp")]
