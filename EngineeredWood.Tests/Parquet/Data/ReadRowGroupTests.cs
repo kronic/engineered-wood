@@ -1677,4 +1677,134 @@ public class ReadRowGroupTests
         }
         Assert.True(hasList, "Expected at least one ListType field in nullable.impala.parquet.");
     }
+
+    // ─── UseViewTypes option tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task UseViewTypes_SchemaHasStringViewType()
+    {
+        // delta_encoding_optional_column.parquet has UTF8-annotated STRING columns (col 9+)
+        var options = new ParquetReadOptions { UseViewTypes = true };
+        await using var file = new LocalRandomAccessFile(
+            TestData.GetPath("delta_encoding_optional_column.parquet"));
+        using var reader = new ParquetFileReader(file, ownsFile: false, options);
+
+        var batch = await reader.ReadRowGroupAsync(0);
+
+        // At least one field should be StringViewType (the UTF8-annotated string columns)
+        bool hasStringView = batch.Schema.FieldsList.Any(f => f.DataType is StringViewType);
+        Assert.True(hasStringView, "Expected at least one StringViewType field.");
+    }
+
+    [Fact]
+    public async Task UseViewTypes_ProducesStringViewArray()
+    {
+        // lz4_raw_compressed_larger.parquet: column 0 is a UTF8 string column
+        var options = new ParquetReadOptions { UseViewTypes = true };
+        await using var file = new LocalRandomAccessFile(
+            TestData.GetPath("lz4_raw_compressed_larger.parquet"));
+        using var reader = new ParquetFileReader(file, ownsFile: false, options);
+
+        var batch = await reader.ReadRowGroupAsync(0);
+        var col = batch.Column(0);
+
+        Assert.IsType<StringViewType>(batch.Schema.FieldsList[0].DataType);
+        Assert.IsType<StringViewArray>(col);
+    }
+
+    [Fact]
+    public async Task UseViewTypes_StringValuesMatchDefault()
+    {
+        // Read the same file with and without UseViewTypes; string values must be identical.
+        await using var file1 = new LocalRandomAccessFile(
+            TestData.GetPath("lz4_raw_compressed_larger.parquet"));
+        using var readerDefault = new ParquetFileReader(file1, ownsFile: false);
+        var batchDefault = await readerDefault.ReadRowGroupAsync(0);
+
+        await using var file2 = new LocalRandomAccessFile(
+            TestData.GetPath("lz4_raw_compressed_larger.parquet"));
+        using var readerView = new ParquetFileReader(file2, ownsFile: false,
+            new ParquetReadOptions { UseViewTypes = true });
+        var batchView = await readerView.ReadRowGroupAsync(0);
+
+        var defaultArr = (StringArray)batchDefault.Column(0);
+        var viewArr = (StringViewArray)batchView.Column(0);
+
+        Assert.Equal(defaultArr.Length, viewArr.Length);
+        for (int i = 0; i < defaultArr.Length; i++)
+            Assert.Equal(defaultArr.GetString(i), viewArr.GetString(i));
+    }
+
+    [Fact]
+    public async Task UseViewTypes_DictionaryEncoded_ValuesMatch()
+    {
+        // alltypes_dictionary.parquet: column "string_col" is BYTE_ARRAY (BinaryType)
+        // With UseViewTypes it becomes BinaryViewType
+        await using var file1 = new LocalRandomAccessFile(
+            TestData.GetPath("alltypes_dictionary.parquet"));
+        using var readerDefault = new ParquetFileReader(file1, ownsFile: false);
+        var batchDefault = await readerDefault.ReadRowGroupAsync(0, ["string_col"]);
+
+        await using var file2 = new LocalRandomAccessFile(
+            TestData.GetPath("alltypes_dictionary.parquet"));
+        using var readerView = new ParquetFileReader(file2, ownsFile: false,
+            new ParquetReadOptions { UseViewTypes = true });
+        var batchView = await readerView.ReadRowGroupAsync(0, ["string_col"]);
+
+        var defaultArr = (BinaryArray)batchDefault.Column(0);
+        var viewArr = (BinaryViewArray)batchView.Column(0);
+
+        Assert.Equal(defaultArr.Length, viewArr.Length);
+        for (int i = 0; i < defaultArr.Length; i++)
+            Assert.Equal(defaultArr.GetBytes(i).ToArray(), viewArr.GetBytes(i).ToArray());
+    }
+
+    [Fact]
+    public async Task UseViewTypes_NullableColumn_NullsPreserved()
+    {
+        // delta_encoding_optional_column.parquet has nullable STRING columns with nulls
+        await using var file1 = new LocalRandomAccessFile(
+            TestData.GetPath("delta_encoding_optional_column.parquet"));
+        using var readerDefault = new ParquetFileReader(file1, ownsFile: false);
+        var batchDefault = await readerDefault.ReadRowGroupAsync(0);
+
+        await using var file2 = new LocalRandomAccessFile(
+            TestData.GetPath("delta_encoding_optional_column.parquet"));
+        using var readerView = new ParquetFileReader(file2, ownsFile: false,
+            new ParquetReadOptions { UseViewTypes = true });
+        var batchView = await readerView.ReadRowGroupAsync(0);
+
+        // Check all string columns match in null pattern and values
+        for (int c = 9; c < batchDefault.Schema.FieldsList.Count; c++)
+        {
+            var defaultCol = (StringArray)batchDefault.Column(c);
+            var viewCol = (StringViewArray)batchView.Column(c);
+
+            Assert.Equal(defaultCol.Length, viewCol.Length);
+            for (int i = 0; i < defaultCol.Length; i++)
+            {
+                Assert.Equal(defaultCol.IsNull(i), viewCol.IsNull(i));
+                if (!defaultCol.IsNull(i))
+                    Assert.Equal(defaultCol.GetString(i), viewCol.GetString(i));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task UseViewTypes_NonStringColumns_Unaffected()
+    {
+        // Non-ByteArray columns should still produce their normal Arrow types
+        var options = new ParquetReadOptions { UseViewTypes = true };
+        await using var file = new LocalRandomAccessFile(TestData.GetPath("alltypes_plain.parquet"));
+        using var reader = new ParquetFileReader(file, ownsFile: false, options);
+
+        var batch = await reader.ReadRowGroupAsync(0, ["id", "int_col", "double_col"]);
+
+        Assert.IsType<Int32Type>(batch.Schema.FieldsList[0].DataType);
+        Assert.IsType<Int32Type>(batch.Schema.FieldsList[1].DataType);
+        Assert.IsType<DoubleType>(batch.Schema.FieldsList[2].DataType);
+        Assert.IsType<Int32Array>(batch.Column(0));
+        Assert.IsType<Int32Array>(batch.Column(1));
+        Assert.IsType<DoubleArray>(batch.Column(2));
+    }
 }

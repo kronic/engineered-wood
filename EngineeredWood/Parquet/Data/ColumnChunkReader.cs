@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using EngineeredWood.Parquet.Compression;
 using EngineeredWood.Parquet.Metadata;
 using EngineeredWood.Parquet.Schema;
@@ -38,9 +39,11 @@ internal static class ColumnChunkReader
     {
         bool isRepeated = column.MaxRepetitionLevel > 0;
         int capacity = isRepeated ? checked((int)columnMeta.NumValues) : rowCount;
+        bool useViewTypes = arrowField.DataType is StringViewType or BinaryViewType;
 
         using var state = new ColumnBuildState(
-            column.PhysicalType, column.MaxDefinitionLevel, column.MaxRepetitionLevel, capacity);
+            column.PhysicalType, column.MaxDefinitionLevel, column.MaxRepetitionLevel, capacity,
+            useViewTypes);
         DictionaryDecoder? dictionary = null;
 
         int pos = 0;
@@ -411,17 +414,24 @@ internal static class ColumnChunkReader
             }
             case PhysicalType.ByteArray:
             {
-                var offsets = ArrayPool<int>.Shared.Rent(count + 1);
-                try
+                if (state.IsViewMode)
                 {
-                    int totalLen = PlainDecoder.MeasureByteArrays(data, offsets, count);
-                    Span<byte> dest = state.ReserveByteArrayData(totalLen);
-                    PlainDecoder.CopyByteArrayData(data, offsets, dest, count);
-                    state.CommitByteArrayData(offsets.AsSpan(0, count + 1), count, totalLen);
+                    PlainDecoder.WriteViewsToState(data, count, state);
                 }
-                finally
+                else
                 {
-                    ArrayPool<int>.Shared.Return(offsets);
+                    var offsets = ArrayPool<int>.Shared.Rent(count + 1);
+                    try
+                    {
+                        int totalLen = PlainDecoder.MeasureByteArrays(data, offsets, count);
+                        Span<byte> dest = state.ReserveByteArrayData(totalLen);
+                        PlainDecoder.CopyByteArrayData(data, offsets, dest, count);
+                        state.CommitByteArrayData(offsets.AsSpan(0, count + 1), count, totalLen);
+                    }
+                    finally
+                    {
+                        ArrayPool<int>.Shared.Return(offsets);
+                    }
                 }
                 break;
             }
@@ -644,28 +654,37 @@ internal static class ColumnChunkReader
                     var offsets = ArrayPool<int>.Shared.Rent(count + 1);
                     try
                     {
-                        // First pass: compute individual lengths and total size
-                        Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
-                        int totalLen = 0;
-                        for (int i = 0; i < count; i++)
+                        if (state.IsViewMode)
                         {
-                            int len = dictionary.GetByteArray(indices[i]).Length;
-                            lengths[i] = len;
-                            totalLen += len;
+                            // Write views directly — no intermediate byte[] needed
+                            for (int i = 0; i < count; i++)
+                                state.WriteOneStringView(dictionary.GetByteArray(indices[i]));
                         }
+                        else
+                        {
+                            // First pass: compute individual lengths and total size
+                            Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
+                            int totalLen = 0;
+                            for (int i = 0; i < count; i++)
+                            {
+                                int len = dictionary.GetByteArray(indices[i]).Length;
+                                lengths[i] = len;
+                                totalLen += len;
+                            }
 
-                        // Reserve space directly in native buffer — no intermediate byte[] allocation
-                        Span<byte> dest = state.ReserveByteArrayData(totalLen);
-                        int pos = 0;
-                        offsets[0] = 0;
-                        for (int i = 0; i < count; i++)
-                        {
-                            int len = lengths[i];
-                            dictionary.GetByteArray(indices[i]).CopyTo(dest.Slice(pos));
-                            pos += len;
-                            offsets[i + 1] = pos;
+                            // Reserve space directly in native buffer — no intermediate byte[] allocation
+                            Span<byte> dest = state.ReserveByteArrayData(totalLen);
+                            int pos = 0;
+                            offsets[0] = 0;
+                            for (int i = 0; i < count; i++)
+                            {
+                                int len = lengths[i];
+                                dictionary.GetByteArray(indices[i]).CopyTo(dest.Slice(pos));
+                                pos += len;
+                                offsets[i + 1] = pos;
+                            }
+                            state.CommitByteArrayData(offsets.AsSpan(0, count + 1), count, totalLen);
                         }
-                        state.CommitByteArrayData(offsets.AsSpan(0, count + 1), count, totalLen);
                     }
                     finally
                     {

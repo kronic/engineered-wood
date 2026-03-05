@@ -12,10 +12,12 @@ internal static class ArrowSchemaConverter
     /// <summary>
     /// Converts a Parquet <see cref="ColumnDescriptor"/> to an Arrow <see cref="Apache.Arrow.Field"/>.
     /// </summary>
-    public static Apache.Arrow.Field ToArrowField(ColumnDescriptor column)
+    public static Apache.Arrow.Field ToArrowField(ColumnDescriptor column, ParquetReadOptions? options = null)
     {
         bool nullable = column.MaxDefinitionLevel > 0;
         var arrowType = ToArrowType(column);
+        if (options?.UseViewTypes == true)
+            arrowType = ApplyViewTypes(arrowType);
         return new Apache.Arrow.Field(column.DottedPath, arrowType, nullable);
     }
 
@@ -23,15 +25,28 @@ internal static class ArrowSchemaConverter
     /// Converts the top-level children of a schema root into Arrow fields,
     /// recursing into group nodes to produce nested <see cref="StructType"/> fields.
     /// </summary>
-    public static Apache.Arrow.Field[] ToArrowFields(SchemaNode root)
+    public static Apache.Arrow.Field[] ToArrowFields(SchemaNode root, ParquetReadOptions? options = null)
     {
         var fields = new Apache.Arrow.Field[root.Children.Count];
         for (int i = 0; i < root.Children.Count; i++)
-            fields[i] = NodeToArrowField(root.Children[i]);
+            fields[i] = NodeToArrowField(root.Children[i], options);
         return fields;
     }
 
-    private static Apache.Arrow.Field NodeToArrowField(SchemaNode node)
+    /// <summary>
+    /// Remaps <see cref="StringType"/> → <see cref="StringViewType"/> and
+    /// <see cref="BinaryType"/> → <see cref="BinaryViewType"/> when
+    /// <see cref="ParquetReadOptions.UseViewTypes"/> is enabled.
+    /// All other types are returned unchanged.
+    /// </summary>
+    private static IArrowType ApplyViewTypes(IArrowType type) => type switch
+    {
+        Apache.Arrow.Types.StringType => StringViewType.Default,
+        BinaryType => BinaryViewType.Default,
+        _ => type,
+    };
+
+    private static Apache.Arrow.Field NodeToArrowField(SchemaNode node, ParquetReadOptions? options = null)
     {
         bool nullable = node.Element.RepetitionType == FieldRepetitionType.Optional;
 
@@ -40,24 +55,24 @@ internal static class ArrowSchemaConverter
             // Bare repeated primitive: repeated leaf at top level → list of that type
             if (node.Element.RepetitionType == FieldRepetitionType.Repeated)
             {
-                var elementType = LeafToArrowType(node);
+                var elementType = LeafToArrowType(node, options);
                 var elementField = new Apache.Arrow.Field("element", elementType, nullable: false);
                 return new Apache.Arrow.Field(node.Name, new ListType(elementField), nullable: false);
             }
 
-            var arrowType = LeafToArrowType(node);
+            var arrowType = LeafToArrowType(node, options);
             return new Apache.Arrow.Field(node.Name, arrowType, nullable);
         }
 
         if (IsListNode(node))
-            return BuildListField(node);
+            return BuildListField(node, options);
         if (IsMapNode(node))
-            return BuildMapField(node);
+            return BuildMapField(node, options);
 
         // Group node → StructType
         var childFields = new Apache.Arrow.Field[node.Children.Count];
         for (int i = 0; i < node.Children.Count; i++)
-            childFields[i] = NodeToArrowField(node.Children[i]);
+            childFields[i] = NodeToArrowField(node.Children[i], options);
 
         var structType = new StructType(childFields);
         return new Apache.Arrow.Field(node.Name, structType, nullable);
@@ -74,7 +89,7 @@ internal static class ArrowSchemaConverter
          node.Element.ConvertedType == ConvertedType.Map ||
          node.Element.ConvertedType == ConvertedType.MapKeyValue);
 
-    private static Apache.Arrow.Field BuildListField(SchemaNode node)
+    private static Apache.Arrow.Field BuildListField(SchemaNode node, ParquetReadOptions? options = null)
     {
         bool nullable = node.Element.RepetitionType == FieldRepetitionType.Optional;
 
@@ -87,20 +102,20 @@ internal static class ArrowSchemaConverter
         if (repeatedChild.IsLeaf)
         {
             // 2-level: repeated leaf is the element
-            var elementType = LeafToArrowType(repeatedChild);
+            var elementType = LeafToArrowType(repeatedChild, options);
             elementField = new Apache.Arrow.Field(repeatedChild.Name, elementType, nullable: false);
         }
         else if (repeatedChild.Children.Count == 1)
         {
             // 3-level standard: recurse into single element child
-            elementField = NodeToArrowField(repeatedChild.Children[0]);
+            elementField = NodeToArrowField(repeatedChild.Children[0], options);
         }
         else
         {
             // 3-level with multiple children in repeated group → treat repeated group as struct element
             var childFields = new Apache.Arrow.Field[repeatedChild.Children.Count];
             for (int i = 0; i < repeatedChild.Children.Count; i++)
-                childFields[i] = NodeToArrowField(repeatedChild.Children[i]);
+                childFields[i] = NodeToArrowField(repeatedChild.Children[i], options);
             var structType = new StructType(childFields);
             elementField = new Apache.Arrow.Field(repeatedChild.Name, structType, nullable: false);
         }
@@ -108,20 +123,20 @@ internal static class ArrowSchemaConverter
         return new Apache.Arrow.Field(node.Name, new ListType(elementField), nullable);
     }
 
-    private static Apache.Arrow.Field BuildMapField(SchemaNode node)
+    private static Apache.Arrow.Field BuildMapField(SchemaNode node, ParquetReadOptions? options = null)
     {
         bool nullable = node.Element.RepetitionType == FieldRepetitionType.Optional;
 
         // Standard map: node → repeated key_value → key + value
         var keyValueGroup = node.Children[0];
-        var keyField = NodeToArrowField(keyValueGroup.Children[0]);
+        var keyField = NodeToArrowField(keyValueGroup.Children[0], options);
         // Key field must be non-nullable per Arrow spec
         keyField = new Apache.Arrow.Field(keyField.Name, keyField.DataType, nullable: false);
 
         Apache.Arrow.Field valueField;
         if (keyValueGroup.Children.Count > 1)
         {
-            valueField = NodeToArrowField(keyValueGroup.Children[1]);
+            valueField = NodeToArrowField(keyValueGroup.Children[1], options);
         }
         else
         {
@@ -133,7 +148,7 @@ internal static class ArrowSchemaConverter
         return new Apache.Arrow.Field(node.Name, mapType, nullable);
     }
 
-    private static IArrowType LeafToArrowType(SchemaNode node)
+    private static IArrowType LeafToArrowType(SchemaNode node, ParquetReadOptions? options = null)
     {
         var element = node.Element;
 
@@ -143,17 +158,20 @@ internal static class ArrowSchemaConverter
             // Build a temporary descriptor to reuse existing logic
             var desc = BuildTempDescriptor(node);
             var result = FromLogicalType(element.LogicalType, desc);
-            if (result != null) return result;
+            if (result != null)
+                return options?.UseViewTypes == true ? ApplyViewTypes(result) : result;
         }
 
         if (element.ConvertedType.HasValue)
         {
             var desc = BuildTempDescriptor(node);
             var result = FromConvertedType(element.ConvertedType.Value, desc);
-            if (result != null) return result;
+            if (result != null)
+                return options?.UseViewTypes == true ? ApplyViewTypes(result) : result;
         }
 
-        return FromPhysicalType(BuildTempDescriptor(node));
+        var physical = FromPhysicalType(BuildTempDescriptor(node));
+        return options?.UseViewTypes == true ? ApplyViewTypes(physical) : physical;
     }
 
     private static ColumnDescriptor BuildTempDescriptor(SchemaNode node) => new()

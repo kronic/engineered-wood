@@ -49,6 +49,8 @@ internal static class ArrowArrayBuilder
             DoubleType => BuildDenseFixedArray<double>(state, arrowType, numValues),
             StringType => BuildDenseVarBinaryArray(state, arrowType, numValues),
             BinaryType => BuildDenseVarBinaryArray(state, arrowType, numValues),
+            StringViewType => BuildDenseStringViewArray(state, arrowType, numValues),
+            BinaryViewType => BuildDenseStringViewArray(state, arrowType, numValues),
             Decimal32Type or Decimal64Type or Decimal128Type or Decimal256Type
                 => BuildDecimalArray(state, arrowType, numValues, dense: true),
             FixedSizeBinaryType fsb => BuildDenseFixedSizeBinaryArray(state, numValues, fsb),
@@ -290,6 +292,8 @@ internal static class ArrowArrayBuilder
             DoubleType => BuildFixedArray<double>(state, arrowType, rowCount),
             StringType => BuildStringArray(state, rowCount),
             BinaryType => BuildBinaryArray(state, rowCount),
+            StringViewType => BuildStringViewArray(state, rowCount),
+            BinaryViewType => BuildBinaryViewArray(state, rowCount),
             Decimal32Type or Decimal64Type or Decimal128Type or Decimal256Type
                 => BuildDecimalArray(state, arrowType, rowCount, dense: false),
             FixedSizeBinaryType fsb => BuildFixedSizeBinaryArray(state, rowCount, fsb),
@@ -535,6 +539,107 @@ internal static class ArrowArrayBuilder
 
         var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
             new[] { bitmapArrow, offsetsArrow, dataArrow });
+        return ArrowArrayFactory.BuildArray(data);
+    }
+
+    private static IArrowArray BuildStringViewArray(ColumnBuildState state, int rowCount) =>
+        BuildVarViewArray(state, StringViewType.Default, rowCount);
+
+    private static IArrowArray BuildBinaryViewArray(ColumnBuildState state, int rowCount) =>
+        BuildVarViewArray(state, BinaryViewType.Default, rowCount);
+
+    private static IArrowArray BuildVarViewArray(ColumnBuildState state, IArrowType arrowType, int rowCount)
+    {
+        int nonNullCount = state.ValueCount;
+
+        if (!state.IsNullable)
+        {
+            var viewsArrow = state.BuildViewsBuffer();
+            var dataArrow = state.BuildDataBuffer();
+            var arrayData = new ArrayData(arrowType, rowCount, nullCount: 0, offset: 0,
+                new[] { ArrowBuffer.Empty, viewsArrow, dataArrow });
+            return ArrowArrayFactory.BuildArray(arrayData);
+        }
+
+        int nullCount = rowCount - nonNullCount;
+        var defLevels = state.DefLevelSpan;
+        var denseViews = state.GetDenseViewsSpan();
+
+        // Scatter dense views → sparse views; null rows get 16 zero bytes (valid null view)
+        using var sparseViews = new NativeBuffer<byte>(
+            rowCount * ColumnBuildState.ViewEntrySize, zeroFill: true);
+        using var bitmapBuf = new NativeBuffer<byte>((rowCount + 7) / 8);
+
+        var outViews = sparseViews.ByteSpan;
+        var bitmap = bitmapBuf.ByteSpan;
+
+        int valueIdx = 0;
+        for (int i = 0; i < rowCount; i++)
+        {
+            if (defLevels[i] == state.MaxDefLevel)
+            {
+                denseViews.Slice(valueIdx * ColumnBuildState.ViewEntrySize, ColumnBuildState.ViewEntrySize)
+                    .CopyTo(outViews.Slice(i * ColumnBuildState.ViewEntrySize));
+                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                valueIdx++;
+            }
+            // null row: 16 zero bytes already there from zeroFill
+        }
+
+        var viewsArrowBuf = sparseViews.Build();
+        var bitmapArrow = bitmapBuf.Build();
+        var dataArrowBuf = state.BuildDataBuffer();
+
+        var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
+            new[] { bitmapArrow, viewsArrowBuf, dataArrowBuf });
+        return ArrowArrayFactory.BuildArray(data);
+    }
+
+    private static IArrowArray BuildDenseStringViewArray(
+        ColumnBuildState state, IArrowType arrowType, int numValues)
+    {
+        // Dense view arrays (repeated columns): all numValues entries present, no nulls/scatter
+        int nonNullCount = state.ValueCount;
+
+        if (!state.IsNullable)
+        {
+            var viewsArrow = state.BuildViewsBuffer();
+            var dataArrow = state.BuildDataBuffer();
+            var arrayData = new ArrayData(arrowType, numValues, nullCount: 0, offset: 0,
+                new[] { ArrowBuffer.Empty, viewsArrow, dataArrow });
+            return ArrowArrayFactory.BuildArray(arrayData);
+        }
+
+        // Nullable dense: same scatter logic
+        int nullCount = numValues - nonNullCount;
+        var defLevels = state.DefLevelSpan;
+        var denseViews = state.GetDenseViewsSpan();
+
+        using var sparseViews = new NativeBuffer<byte>(
+            numValues * ColumnBuildState.ViewEntrySize, zeroFill: true);
+        using var bitmapBuf = new NativeBuffer<byte>((numValues + 7) / 8);
+
+        var outViews = sparseViews.ByteSpan;
+        var bitmap = bitmapBuf.ByteSpan;
+
+        int valueIdx = 0;
+        for (int i = 0; i < numValues; i++)
+        {
+            if (defLevels[i] == state.MaxDefLevel)
+            {
+                denseViews.Slice(valueIdx * ColumnBuildState.ViewEntrySize, ColumnBuildState.ViewEntrySize)
+                    .CopyTo(outViews.Slice(i * ColumnBuildState.ViewEntrySize));
+                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                valueIdx++;
+            }
+        }
+
+        var viewsArrowBuf = sparseViews.Build();
+        var bitmapArrow = bitmapBuf.Build();
+        var dataArrowBuf = state.BuildDataBuffer();
+
+        var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
+            new[] { bitmapArrow, viewsArrowBuf, dataArrowBuf });
         return ArrowArrayFactory.BuildArray(data);
     }
 
@@ -813,14 +918,26 @@ internal sealed class ColumnBuildState : IDisposable
     // For Boolean: track bit offset since values are bit-packed
     private int _boolBitOffset;
 
-    // For ByteArray/String: separate offsets and data buffers
+    // For ByteArray/String (offset mode): separate offsets and data buffers
     private NativeBuffer<int>? _offsetsBuffer;
     private int _offsetsCount; // number of offset entries written (= _valueCount + 1 after first page)
     private NativeBuffer<byte>? _dataBuffer;
     private int _dataByteOffset;
 
+    // For ByteArray/String (view mode): 16-byte views buffer + overflow data buffer
+    private readonly bool _useViewTypes;
+    private NativeBuffer<byte>? _viewsBuffer;   // 16 bytes per non-null value (dense)
+    private int _viewsCount;
+
     private readonly int _capacity;
     private readonly int _elementSize; // bytes per element for fixed-width types
+
+    // View entry layout (16 bytes):
+    //   [0..3]  int32 Length
+    //   Short (Length <= 12): [4..15] inline data (padded with 0s)
+    //   Long  (Length >  12): [4..7] 4-byte prefix, [8..11] int32 buf_index=0, [12..15] int32 buf_offset
+    private const int MaxInlineLength = 12;
+    internal const int ViewEntrySize = 16;
 
     /// <summary>The Parquet physical type for this column.</summary>
     public PhysicalType PhysicalType => _physicalType;
@@ -831,6 +948,9 @@ internal sealed class ColumnBuildState : IDisposable
     /// <summary>Number of non-null values accumulated.</summary>
     public int ValueCount => _valueCount;
 
+    /// <summary>Whether this column is in view mode (produces StringViewArray/BinaryViewArray).</summary>
+    public bool IsViewMode => _useViewTypes;
+
     /// <summary>
     /// Creates a new column build state.
     /// </summary>
@@ -838,12 +958,16 @@ internal sealed class ColumnBuildState : IDisposable
     /// <param name="maxDefLevel">Maximum definition level.</param>
     /// <param name="maxRepLevel">Maximum repetition level (0 for flat/struct-only columns).</param>
     /// <param name="capacity">Buffer capacity: rowCount for flat columns, numValues for repeated.</param>
-    public ColumnBuildState(PhysicalType physicalType, int maxDefLevel, int maxRepLevel, int capacity)
+    /// <param name="useViewTypes">If true, ByteArray columns accumulate 16-byte view entries
+    /// instead of offset/data pairs, producing StringViewArray or BinaryViewArray output.</param>
+    public ColumnBuildState(PhysicalType physicalType, int maxDefLevel, int maxRepLevel, int capacity,
+        bool useViewTypes = false)
     {
         _physicalType = physicalType;
         MaxDefLevel = maxDefLevel;
         MaxRepLevel = maxRepLevel;
         _capacity = capacity;
+        _useViewTypes = useViewTypes;
 
         if (maxDefLevel > 0)
         {
@@ -890,10 +1014,18 @@ internal sealed class ColumnBuildState : IDisposable
                 break;
             case PhysicalType.ByteArray:
                 _elementSize = 0;
-                _offsetsBuffer = new NativeBuffer<int>(capacity + 1, zeroFill: false);
-                _offsetsBuffer.Span[0] = 0;
-                _offsetsCount = 1;
-                _dataBuffer = new NativeBuffer<byte>(capacity * 32, zeroFill: false);
+                if (useViewTypes)
+                {
+                    _viewsBuffer = new NativeBuffer<byte>(capacity * ViewEntrySize, zeroFill: false);
+                    _dataBuffer = new NativeBuffer<byte>(capacity * 32, zeroFill: false); // overflow
+                }
+                else
+                {
+                    _offsetsBuffer = new NativeBuffer<int>(capacity + 1, zeroFill: false);
+                    _offsetsBuffer.Span[0] = 0;
+                    _offsetsCount = 1;
+                    _dataBuffer = new NativeBuffer<byte>(capacity * 32, zeroFill: false);
+                }
                 break;
         }
     }
@@ -977,10 +1109,23 @@ internal sealed class ColumnBuildState : IDisposable
     }
 
     /// <summary>
-    /// Adds BYTE_ARRAY values: writes offsets and copies data into native buffers.
+    /// Adds BYTE_ARRAY values: writes offsets and copies data into native buffers,
+    /// or writes view entries when in view mode.
     /// </summary>
     public void AddByteArrayValues(ReadOnlySpan<int> sourceOffsets, ReadOnlySpan<byte> sourceData, int count)
     {
+        if (_useViewTypes)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                int start = sourceOffsets[i];
+                int end = sourceOffsets[i + 1];
+                WriteOneStringView(sourceData.Slice(start, end - start));
+            }
+            _valueCount += count;
+            return;
+        }
+
         // Ensure data buffer has enough space
         int dataNeeded = _dataByteOffset + sourceData.Length;
         if (dataNeeded > _dataBuffer!.ByteSpan.Length)
@@ -1027,6 +1172,54 @@ internal sealed class ColumnBuildState : IDisposable
         _dataByteOffset += byteCount;
         _valueCount += count;
     }
+
+    /// <summary>
+    /// Writes a single string/binary view entry into the views buffer.
+    /// Values ≤12 bytes are stored inline; longer values are appended to the
+    /// overflow data buffer and referenced by (buffer_index=0, buffer_offset).
+    /// Call only when <see cref="IsViewMode"/> is true.
+    /// </summary>
+    internal void WriteOneStringView(ReadOnlySpan<byte> value)
+    {
+        int len = value.Length;
+        Span<byte> viewsBuf = _viewsBuffer!.ByteSpan;
+        int viewBase = _viewsCount * ViewEntrySize;
+
+        MemoryMarshal.Write(viewsBuf.Slice(viewBase), in len);
+
+        if (len <= MaxInlineLength)
+        {
+            // Inline: zero the 12-byte data area then copy value bytes
+            viewsBuf.Slice(viewBase + 4, MaxInlineLength).Clear();
+            value.CopyTo(viewsBuf.Slice(viewBase + 4));
+        }
+        else
+        {
+            // Reference: write 4-byte prefix, then buf_index=0, buf_offset
+            value.Slice(0, 4).CopyTo(viewsBuf.Slice(viewBase + 4));
+            int bufIdx = 0;
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), in bufIdx);
+            int bufOff = _dataByteOffset;
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), in bufOff);
+
+            // Append to overflow buffer
+            int needed = _dataByteOffset + len;
+            if (needed > _dataBuffer!.ByteSpan.Length)
+                _dataBuffer.Grow(needed);
+            value.CopyTo(_dataBuffer.ByteSpan.Slice(_dataByteOffset));
+            _dataByteOffset += len;
+        }
+
+        _viewsCount++;
+        _valueCount++;
+    }
+
+    /// <summary>Gets the dense views buffer as a read-only byte span (for the build phase).</summary>
+    internal ReadOnlySpan<byte> GetDenseViewsSpan() =>
+        _viewsBuffer!.ByteSpan.Slice(0, _viewsCount * ViewEntrySize);
+
+    /// <summary>Transfers the views buffer to an ArrowBuffer.</summary>
+    internal ArrowBuffer BuildViewsBuffer() => _viewsBuffer!.Build();
 
     // --- Build methods: transfer ownership to ArrowBuffer ---
 
@@ -1110,6 +1303,7 @@ internal sealed class ColumnBuildState : IDisposable
         }
         _valueBuffer?.Dispose();
         _offsetsBuffer?.Dispose();
+        _viewsBuffer?.Dispose();
         _dataBuffer?.Dispose();
     }
 
@@ -1141,6 +1335,8 @@ file static class ArrowArrayFactory
             TimestampType => new TimestampArray(data),
             Apache.Arrow.Types.StringType => new StringArray(data),
             BinaryType => new BinaryArray(data),
+            StringViewType => new StringViewArray(data),
+            BinaryViewType => new BinaryViewArray(data),
             Decimal32Type => new Decimal32Array(data),
             Decimal64Type => new Decimal64Array(data),
             Decimal128Type => new Decimal128Array(data),

@@ -27,6 +27,7 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
     private readonly IRandomAccessFile _file;
     private readonly bool _ownsFile;
+    private readonly ParquetReadOptions _options;
     private FileMetaData? _metadata;
     private SchemaDescriptor? _schema;
     private long _fileLength;
@@ -37,10 +38,12 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
     /// </summary>
     /// <param name="file">The random access file to read from.</param>
     /// <param name="ownsFile">If true, the file will be disposed when this reader is disposed.</param>
-    public ParquetFileReader(IRandomAccessFile file, bool ownsFile = true)
+    /// <param name="options">Read options that control Arrow type mapping. Defaults to <see cref="ParquetReadOptions.Default"/>.</param>
+    public ParquetFileReader(IRandomAccessFile file, bool ownsFile = true, ParquetReadOptions? options = null)
     {
         _file = file;
         _ownsFile = ownsFile;
+        _options = options ?? ParquetReadOptions.Default;
     }
 
     /// <summary>
@@ -290,7 +293,7 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
             ranges[i] = new FileRange(start, length);
 
-            leafArrowFields[i] = ArrowSchemaConverter.ToArrowField(selectedColumns[i]);
+            leafArrowFields[i] = ArrowSchemaConverter.ToArrowField(selectedColumns[i], _options);
         }
 
         // Detect nested columns: when reading all columns, check if any
@@ -325,7 +328,7 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
             }
 
             if (hasNestedColumns)
-                topLevelFields = ArrowSchemaConverter.ToArrowFields(schemaRoot);
+                topLevelFields = ArrowSchemaConverter.ToArrowFields(schemaRoot, _options);
         }
 
         return new RowGroupContext(selectedColumns, selectedChunks, ranges,
