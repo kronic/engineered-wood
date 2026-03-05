@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
+using Apache.Arrow.Memory;
 using Apache.Arrow.Types;
 
 namespace EngineeredWood.Parquet.Data;
@@ -88,33 +89,42 @@ internal static class ArrowArrayBuilder
     private static IArrowArray BuildDenseFixedArray<T>(ColumnBuildState state, IArrowType arrowType, int numValues)
         where T : unmanaged
     {
-        var denseValues = state.GetValueSpan<T>();
         var defLevels = state.DefLevelSpan;
         int nullCount = numValues - state.ValueCount;
+        int nonNullCount = state.ValueCount;
 
-        using var scatteredBuf = new NativeBuffer<T>(numValues, zeroFill: false);
-        using var bitmapBuf = new NativeBuffer<byte>((numValues + 7) / 8);
-
-        var scattered = scatteredBuf.Span;
-        var bitmap = bitmapBuf.ByteSpan;
-
-        int valueIdx = 0;
-        for (int i = 0; i < numValues; i++)
+        int bitmapBytes = (numValues + 7) / 8;
+        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
+        try
         {
-            if (defLevels[i] == state.MaxDefLevel)
+            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
+            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
+
+            // In-place reverse scatter: reuse the dense buffer, walking right-to-left
+            // so each value moves rightward (read index always <= write index).
+            var values = state.GetWritableValueSpan<T>();
+            int readIdx = nonNullCount - 1;
+            for (int i = numValues - 1; i >= 0 && readIdx >= 0; i--)
             {
-                scattered[i] = denseValues[valueIdx++];
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                if (defLevels[i] == state.MaxDefLevel)
+                {
+                    values[i] = values[readIdx--];
+                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                }
             }
+
+            var valueArrow = state.BuildValueBuffer();
+            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
+            bitmapOwner = null;
+
+            var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
+                new[] { bitmapArrow, valueArrow });
+            return ArrowArrayFactory.BuildArray(data);
         }
-
-        var valueArrow = scatteredBuf.Build();
-        var bitmapArrow = bitmapBuf.Build();
-        state.DisposeValueBuffer();
-
-        var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
-            new[] { bitmapArrow, valueArrow });
-        return ArrowArrayFactory.BuildArray(data);
+        finally
+        {
+            bitmapOwner?.Dispose();
+        }
     }
 
     private static IArrowArray BuildDenseNarrowIntArray<TNarrow>(ColumnBuildState state, IArrowType arrowType, int numValues)
@@ -306,35 +316,45 @@ internal static class ArrowArrayBuilder
             return ArrowArrayFactory.BuildArray(arrayData);
         }
 
-        // Nullable: scatter dense values into row-position slots, build validity bitmap
-        var denseValues = state.GetValueSpan<T>();
         int nonNullCount = state.ValueCount;
         int nullCount = rowCount - nonNullCount;
         var defLevels = state.DefLevelSpan;
 
-        using var scatteredBuf = new NativeBuffer<T>(rowCount, zeroFill: false);
-        using var bitmapBuf = new NativeBuffer<byte>((rowCount + 7) / 8);
-
-        var scattered = scatteredBuf.Span;
-        var bitmap = bitmapBuf.ByteSpan;
-
-        int valueIdx = 0;
-        for (int i = 0; i < rowCount; i++)
+        // Bitmap: use pooled managed array instead of a native alloc
+        int bitmapBytes = (rowCount + 7) / 8;
+        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
+        try
         {
-            if (defLevels[i] == state.MaxDefLevel)
+            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
+            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
+
+            // In-place reverse scatter: reuse the existing native value buffer as the
+            // scatter target — no second allocation needed. Dense values occupy [0, nonNullCount);
+            // walking right-to-left guarantees each value only moves rightward, so reads
+            // never alias writes.
+            var values = state.GetWritableValueSpan<T>();
+            int readIdx = nonNullCount - 1;
+            for (int i = rowCount - 1; i >= 0 && readIdx >= 0; i--)
             {
-                scattered[i] = denseValues[valueIdx++];
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                if (defLevels[i] == state.MaxDefLevel)
+                {
+                    values[i] = values[readIdx--];
+                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
+                }
             }
+
+            var valueArrow = state.BuildValueBuffer(); // zero-copy: transfers the now-scattered buffer
+            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
+            bitmapOwner = null; // Arrow took ownership
+
+            var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
+                new[] { bitmapArrow, valueArrow });
+            return ArrowArrayFactory.BuildArray(data);
         }
-
-        var valueArrow = scatteredBuf.Build();
-        var bitmapArrow = bitmapBuf.Build();
-        state.DisposeValueBuffer();
-
-        var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
-            new[] { bitmapArrow, valueArrow });
-        return ArrowArrayFactory.BuildArray(data);
+        finally
+        {
+            bitmapOwner?.Dispose();
+        }
     }
 
     /// <summary>
@@ -988,6 +1008,17 @@ internal sealed class ColumnBuildState : IDisposable
         if (_valueBuffer == null) return ReadOnlySpan<T>.Empty;
         var bytes = _valueBuffer.ByteSpan.Slice(0, _valueByteOffset);
         return MemoryMarshal.Cast<byte, T>(bytes);
+    }
+
+    /// <summary>
+    /// Gets a writable span over the FULL value buffer capacity (rowCount elements).
+    /// Used for in-place scatter during nullable array assembly — the dense values
+    /// at [0, ValueCount) are scattered rightward into their sparse row positions.
+    /// </summary>
+    internal Span<T> GetWritableValueSpan<T>() where T : unmanaged
+    {
+        if (_valueBuffer == null) return Span<T>.Empty;
+        return MemoryMarshal.Cast<byte, T>(_valueBuffer.ByteSpan);
     }
 
     /// <summary>Gets a span over the raw value bytes (for boolean and fixed-size binary build).</summary>
