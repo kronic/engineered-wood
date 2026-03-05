@@ -43,11 +43,27 @@ public class RowGroupReadBenchmarks
         return await reader.ReadRowGroupAsync(0).ConfigureAwait(false);
     }
 
+    [Benchmark(Description = "EW_ReadAll_ViewTypes")]
+    public async Task<Apache.Arrow.RecordBatch> EW_ReadAll_ViewTypes()
+    {
+        using var file = new LocalRandomAccessFile(FilePath);
+        using var reader = new ParquetFileReader(file, options: new ParquetReadOptions { UseViewTypes = true });
+        return await reader.ReadRowGroupAsync(0).ConfigureAwait(false);
+    }
+
     [Benchmark(Description = "EW_Incremental_Seq")]
     public async Task<Apache.Arrow.RecordBatch> EW_Incremental_Seq()
     {
         using var file = new LocalRandomAccessFile(FilePath);
         using var reader = new ParquetFileReader(file);
+        return await reader.ReadRowGroupIncrementalAsync(0).ConfigureAwait(false);
+    }
+
+    [Benchmark(Description = "EW_Incremental_ViewTypes")]
+    public async Task<Apache.Arrow.RecordBatch> EW_Incremental_ViewTypes()
+    {
+        using var file = new LocalRandomAccessFile(FilePath);
+        using var reader = new ParquetFileReader(file, options: new ParquetReadOptions { UseViewTypes = true });
         return await reader.ReadRowGroupIncrementalAsync(0).ConfigureAwait(false);
     }
 
