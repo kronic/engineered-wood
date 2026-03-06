@@ -29,7 +29,7 @@ internal static class LevelDecoder
         ReadOnlySpan<byte> data,
         int maxLevel,
         int valueCount,
-        Span<int> levels,
+        Span<byte> levels,
         out int matchCount,
         Encoding encoding = Encoding.Rle)
     {
@@ -70,7 +70,7 @@ internal static class LevelDecoder
         ReadOnlySpan<byte> data,
         int maxLevel,
         int valueCount,
-        Span<int> levels,
+        Span<byte> levels,
         out int matchCount)
     {
         if (maxLevel == 0)
@@ -103,7 +103,7 @@ internal static class LevelDecoder
         ReadOnlySpan<byte> data,
         int maxLevel,
         int valueCount,
-        Span<int> levels,
+        Span<byte> levels,
         out int matchCount)
     {
         int bitWidth = GetBitWidth(maxLevel);
@@ -130,9 +130,9 @@ internal static class LevelDecoder
                 : AssemblePartialBigEndian(packed, byteIdx, remaining);
 
             int shift = 32 - bitIdx - bitWidth;
-            int val = (int)((raw >> shift) & (uint)mask);
+            byte val = (byte)((raw >> shift) & (uint)mask);
             levels[i] = val;
-            if (val == maxLevel) matchCount++;
+            if (val == (byte)maxLevel) matchCount++;
         }
 
         return byteLength;

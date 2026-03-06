@@ -121,6 +121,133 @@ internal ref struct RleBitPackedDecoder
     }
 
     /// <summary>
+    /// Reads values into a byte destination span.
+    /// </summary>
+    public void ReadBatch(Span<byte> destination)
+    {
+        int offset = 0;
+        while (offset < destination.Length)
+        {
+            if (_remaining == 0)
+                ReadNextGroup();
+
+            int toCopy = Math.Min(_remaining, destination.Length - offset);
+
+            if (_isRle)
+            {
+                destination.Slice(offset, toCopy).Fill((byte)_rleValue);
+                _remaining -= toCopy;
+                offset += toCopy;
+            }
+            else
+            {
+                if (_bitWidth == 1 && (_bitOffset & 7) == 0)
+                {
+                    int byteStart = _bitPackedPos + (_bitOffset >> 3);
+                    while (toCopy >= 8)
+                    {
+                        byte packed = _data[byteStart++];
+                        destination[offset]     = (byte)( packed        & 1);
+                        destination[offset + 1] = (byte)((packed >> 1) & 1);
+                        destination[offset + 2] = (byte)((packed >> 2) & 1);
+                        destination[offset + 3] = (byte)((packed >> 3) & 1);
+                        destination[offset + 4] = (byte)((packed >> 4) & 1);
+                        destination[offset + 5] = (byte)((packed >> 5) & 1);
+                        destination[offset + 6] = (byte)((packed >> 6) & 1);
+                        destination[offset + 7] = (byte)((packed >> 7) & 1);
+                        offset += 8;
+                        _bitOffset += 8;
+                        _remaining -= 8;
+                        toCopy -= 8;
+                    }
+                }
+
+                int mask = (1 << _bitWidth) - 1;
+                for (int i = 0; i < toCopy; i++)
+                {
+                    int byteIdx = _bitPackedPos + (_bitOffset >> 3);
+                    int bitIdx = _bitOffset & 7;
+                    _bitOffset += _bitWidth;
+
+                    int rem = _data.Length - byteIdx;
+                    uint raw = rem >= 4
+                        ? BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIdx))
+                        : AssemblePartial(byteIdx, rem);
+                    destination[offset++] = (byte)((raw >> bitIdx) & (uint)mask);
+                    _remaining--;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads values into a byte destination span and simultaneously
+    /// counts how many decoded values equal <paramref name="matchValue"/>.
+    /// </summary>
+    public void ReadBatch(Span<byte> destination, int matchValue, out int matchCount)
+    {
+        matchCount = 0;
+        int offset = 0;
+        while (offset < destination.Length)
+        {
+            if (_remaining == 0)
+                ReadNextGroup();
+
+            int toCopy = Math.Min(_remaining, destination.Length - offset);
+
+            if (_isRle)
+            {
+                destination.Slice(offset, toCopy).Fill((byte)_rleValue);
+                if (_rleValue == matchValue) matchCount += toCopy;
+                _remaining -= toCopy;
+                offset += toCopy;
+            }
+            else
+            {
+                if (_bitWidth == 1 && (_bitOffset & 7) == 0)
+                {
+                    int byteStart = _bitPackedPos + (_bitOffset >> 3);
+                    while (toCopy >= 8)
+                    {
+                        byte packed = _data[byteStart++];
+                        destination[offset]     = (byte)( packed        & 1);
+                        destination[offset + 1] = (byte)((packed >> 1) & 1);
+                        destination[offset + 2] = (byte)((packed >> 2) & 1);
+                        destination[offset + 3] = (byte)((packed >> 3) & 1);
+                        destination[offset + 4] = (byte)((packed >> 4) & 1);
+                        destination[offset + 5] = (byte)((packed >> 5) & 1);
+                        destination[offset + 6] = (byte)((packed >> 6) & 1);
+                        destination[offset + 7] = (byte)((packed >> 7) & 1);
+                        if (matchValue == 1)      matchCount += BitOperations.PopCount(packed);
+                        else if (matchValue == 0) matchCount += 8 - BitOperations.PopCount(packed);
+                        offset += 8;
+                        _bitOffset += 8;
+                        _remaining -= 8;
+                        toCopy -= 8;
+                    }
+                }
+
+                int mask = (1 << _bitWidth) - 1;
+                for (int i = 0; i < toCopy; i++)
+                {
+                    int byteIdx = _bitPackedPos + (_bitOffset >> 3);
+                    int bitIdx = _bitOffset & 7;
+                    _bitOffset += _bitWidth;
+
+                    int rem = _data.Length - byteIdx;
+                    uint raw = rem >= 4
+                        ? BinaryPrimitives.ReadUInt32LittleEndian(_data.Slice(byteIdx))
+                        : AssemblePartial(byteIdx, rem);
+                    byte val = (byte)((raw >> bitIdx) & (uint)mask);
+                    destination[offset++] = val;
+                    if (val == matchValue) matchCount++;
+                    _remaining--;
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Reads <paramref name="count"/> values into the destination span and simultaneously
     /// counts how many decoded values equal <paramref name="matchValue"/>.
     /// Avoids a separate pass to count non-null values after level decoding.

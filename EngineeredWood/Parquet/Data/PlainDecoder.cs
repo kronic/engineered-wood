@@ -184,22 +184,11 @@ internal static class PlainDecoder
     }
 
     /// <summary>
-    /// Single-pass view writer for PLAIN-encoded BYTE_ARRAY values.
-    /// Reads each length-prefixed value and calls
-    /// <see cref="ColumnBuildState.WriteOneStringView"/> directly,
-    /// avoiding any intermediate buffer allocation.
+    /// Batch view writer for PLAIN-encoded BYTE_ARRAY values.
+    /// Pre-reserves overflow space then writes all views in a tight loop.
     /// </summary>
     public static void WriteViewsToState(ReadOnlySpan<byte> data, int count, ColumnBuildState state)
     {
-        int srcPos = 0;
-        for (int i = 0; i < count; i++)
-        {
-            if (srcPos + 4 > data.Length)
-                throw new ParquetFormatException("Unexpected end of PLAIN ByteArray data.");
-            int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(srcPos));
-            srcPos += 4;
-            state.WriteOneStringView(data.Slice(srcPos, len));
-            srcPos += len;
-        }
+        state.WritePlainByteArrayViews(data, count);
     }
 }

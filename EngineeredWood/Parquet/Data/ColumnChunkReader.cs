@@ -108,11 +108,21 @@ internal static class ColumnChunkReader
 
         int[]? defLevels = null;
         if ((preserveDefLevels || isRepeated) && column.MaxDefinitionLevel > 0)
-            defLevels = state.DefLevelSpan.ToArray();
+        {
+            var src = state.DefLevelSpan;
+            defLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                defLevels[i] = src[i];
+        }
 
         int[]? repLevels = null;
         if (isRepeated)
-            repLevels = state.RepLevelSpan.ToArray();
+        {
+            var src = state.RepLevelSpan;
+            repLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                repLevels[i] = src[i];
+        }
 
         IArrowArray array;
         if (isRepeated)
@@ -258,7 +268,7 @@ internal static class ColumnChunkReader
         }
         else if (v2Header.RepetitionLevelsByteLength > 0)
         {
-            var tempRep = numValues <= 1024 ? stackalloc int[numValues] : new int[numValues];
+            var tempRep = numValues <= 4096 ? stackalloc byte[numValues] : new byte[numValues];
             LevelDecoder.DecodeV2(
                 rawData.Slice(offset, v2Header.RepetitionLevelsByteLength),
                 column.MaxRepetitionLevel, numValues, tempRep, out _);
@@ -667,26 +677,20 @@ internal static class ColumnChunkReader
                         }
                         else
                         {
-                            // First pass: compute individual lengths and total size
-                            Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
+                            // First pass: compute offsets and total size using cheap length lookups
                             int totalLen = 0;
-                            for (int i = 0; i < count; i++)
-                            {
-                                int len = dictionary.GetByteArray(indices[i]).Length;
-                                lengths[i] = len;
-                                totalLen += len;
-                            }
-
-                            // Reserve space directly in native buffer — no intermediate byte[] allocation
-                            Span<byte> dest = state.ReserveByteArrayData(totalLen);
-                            int pos = 0;
                             offsets[0] = 0;
                             for (int i = 0; i < count; i++)
                             {
-                                int len = lengths[i];
-                                dictionary.GetByteArray(indices[i]).CopyTo(dest.Slice(pos));
-                                pos += len;
-                                offsets[i + 1] = pos;
+                                totalLen += dictionary.GetByteArrayLength(indices[i]);
+                                offsets[i + 1] = totalLen;
+                            }
+
+                            // Second pass: copy data using precomputed offsets (single GetByteArray per value)
+                            Span<byte> dest = state.ReserveByteArrayData(totalLen);
+                            for (int i = 0; i < count; i++)
+                            {
+                                dictionary.GetByteArray(indices[i]).CopyTo(dest.Slice(offsets[i]));
                             }
                             state.CommitByteArrayData(offsets.AsSpan(0, count + 1), count, totalLen);
                         }

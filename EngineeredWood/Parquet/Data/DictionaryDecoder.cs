@@ -111,4 +111,8 @@ internal sealed class DictionaryDecoder
         int end = _byteArrayOffsets[index + 1];
         return _byteArrayData.AsSpan(start, end - start);
     }
+
+    /// <summary>Gets the byte length of a BYTE_ARRAY dictionary entry without creating a span.</summary>
+    public int GetByteArrayLength(int index) =>
+        _byteArrayOffsets![index + 1] - _byteArrayOffsets[index];
 }

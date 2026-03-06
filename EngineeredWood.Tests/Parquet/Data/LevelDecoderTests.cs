@@ -9,7 +9,7 @@ public class LevelDecoderTests
     public void DecodeV1_MaxLevelZero_ReturnsZeros()
     {
         byte[] data = [0xFF]; // irrelevant
-        var levels = new int[4];
+        var levels = new byte[4];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 0, valueCount: 4, levels, out int matchCount);
         Assert.Equal(0, consumed);
         Assert.Equal([0, 0, 0, 0], levels);
@@ -26,7 +26,7 @@ public class LevelDecoderTests
         BitConverter.TryWriteBytes(data.AsSpan(0), rleData.Length);
         rleData.CopyTo(data.AsSpan(4));
 
-        var levels = new int[4];
+        var levels = new byte[4];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 1, valueCount: 4, levels, out int matchCount);
 
         Assert.Equal(4 + rleData.Length, consumed);
@@ -38,7 +38,7 @@ public class LevelDecoderTests
     public void DecodeV2_MaxLevelZero_ReturnsZeros()
     {
         byte[] data = [];
-        var levels = new int[3];
+        var levels = new byte[3];
         LevelDecoder.DecodeV2(data, maxLevel: 0, valueCount: 3, levels, out int matchCount);
         Assert.Equal([0, 0, 0], levels);
         Assert.Equal(3, matchCount);
@@ -50,7 +50,7 @@ public class LevelDecoderTests
         // Raw RLE: 3 copies of value 1, bitWidth=1
         // Header = (3 << 1) | 0 = 6, value = 1
         byte[] data = [6, 1];
-        var levels = new int[3];
+        var levels = new byte[3];
         LevelDecoder.DecodeV2(data, maxLevel: 1, valueCount: 3, levels, out int matchCount);
         Assert.Equal([1, 1, 1], levels);
         Assert.Equal(3, matchCount);
@@ -62,7 +62,7 @@ public class LevelDecoderTests
         // MSB-packed: values [1, 0, 1, 0, 1, 1, 0, 0] with bitWidth=1
         // Packed MSB-first: 10101100 = 0xAC
         byte[] data = [0xAC];
-        var levels = new int[8];
+        var levels = new byte[8];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 1, valueCount: 8, levels, out int matchCount,
             Encoding.BitPacked);
         Assert.Equal(1, consumed);
@@ -76,7 +76,7 @@ public class LevelDecoderTests
         // MSB-packed: values [0, 1, 2, 3] with bitWidth=2
         // Bit stream: 00 01 10 11 → 00011011 = 0x1B
         byte[] data = [0x1B];
-        var levels = new int[4];
+        var levels = new byte[4];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 3, valueCount: 4, levels, out int matchCount,
             Encoding.BitPacked);
         Assert.Equal(1, consumed);
@@ -90,7 +90,7 @@ public class LevelDecoderTests
         // MSB-packed: values [1, 2, 5] with bitWidth=3
         // Bit stream: 001 010 101 (pad) → 00101010 1(0000000) → 0x2A, 0x80
         byte[] data = [0x2A, 0x80];
-        var levels = new int[3];
+        var levels = new byte[3];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 7, valueCount: 3, levels, out int matchCount,
             Encoding.BitPacked);
         Assert.Equal(2, consumed); // ceil(3*3/8) = 2
@@ -102,7 +102,7 @@ public class LevelDecoderTests
     public void DecodeV1_BitPacked_MaxLevelZero_ReturnsZeros()
     {
         byte[] data = [0xFF]; // irrelevant — should not be read
-        var levels = new int[4];
+        var levels = new byte[4];
         int consumed = LevelDecoder.DecodeV1(data, maxLevel: 0, valueCount: 4, levels, out int matchCount,
             Encoding.BitPacked);
         Assert.Equal(0, consumed);

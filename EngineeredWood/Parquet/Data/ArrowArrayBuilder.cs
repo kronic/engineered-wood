@@ -1,6 +1,8 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Memory;
@@ -321,6 +323,52 @@ internal static class ArrowArrayBuilder
         return new NullArray(length);
     }
 
+    /// <summary>
+    /// Builds a validity bitmap from byte definition levels using SIMD where available.
+    /// Bit i is set if defLevels[i] == maxDefLevel.
+    /// </summary>
+    private static void BuildBitmapFromDefLevels(
+        ReadOnlySpan<byte> defLevels, Span<byte> bitmap, int count, byte maxDefLevel)
+    {
+        ref byte defRef = ref MemoryMarshal.GetReference(defLevels);
+        int i = 0;
+
+        if (Vector256.IsHardwareAccelerated && count >= 32)
+        {
+            var maxVec = Vector256.Create(maxDefLevel);
+            int vectorEnd = count - 31;
+            for (; i < vectorEnd; i += 32)
+            {
+                var levels = Vector256.LoadUnsafe(ref defRef, (nuint)i);
+                uint mask = Vector256.Equals(levels, maxVec).ExtractMostSignificantBits();
+                ref byte bitmapRef = ref bitmap[i >> 3];
+                Unsafe.WriteUnaligned(ref bitmapRef, mask);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated && count >= 16)
+        {
+            var maxVec = Vector128.Create(maxDefLevel);
+            int vectorEnd = count - 15;
+            for (; i < vectorEnd; i += 16)
+            {
+                var levels = Vector128.LoadUnsafe(ref defRef, (nuint)i);
+                uint mask = Vector128.Equals(levels, maxVec).ExtractMostSignificantBits();
+                ref byte bitmapRef = ref bitmap[i >> 3];
+                Unsafe.WriteUnaligned(ref bitmapRef, (ushort)mask);
+            }
+        }
+
+        // Scalar tail: clear remaining bitmap bytes first since |= requires zero-init
+        int tailBitmapStart = i >> 3;
+        int totalBitmapBytes = (count + 7) / 8;
+        bitmap.Slice(tailBitmapStart, totalBitmapBytes - tailBitmapStart).Clear();
+        for (; i < count; i++)
+        {
+            if (defLevels[i] == maxDefLevel)
+                bitmap[i >> 3] |= (byte)(1 << (i & 7));
+        }
+    }
+
     private static IArrowArray BuildFixedArray<T>(ColumnBuildState state, IArrowType arrowType, int rowCount)
         where T : unmanaged
     {
@@ -342,27 +390,22 @@ internal static class ArrowArrayBuilder
         IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
         try
         {
-            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
             var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
 
-            // In-place reverse scatter: reuse the existing native value buffer as the
-            // scatter target — no second allocation needed. Dense values occupy [0, nonNullCount);
-            // walking right-to-left guarantees each value only moves rightward, so reads
-            // never alias writes.
+            // Build bitmap using SIMD, then scatter values using the bitmap
+            BuildBitmapFromDefLevels(defLevels, bitmap, rowCount, (byte)state.MaxDefLevel);
+
             var values = state.GetWritableValueSpan<T>();
             int readIdx = nonNullCount - 1;
             for (int i = rowCount - 1; i >= 0 && readIdx >= 0; i--)
             {
-                if (defLevels[i] == state.MaxDefLevel)
-                {
+                if ((bitmap[i >> 3] & (1 << (i & 7))) != 0)
                     values[i] = values[readIdx--];
-                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
-                }
             }
 
-            var valueArrow = state.BuildValueBuffer(); // zero-copy: transfers the now-scattered buffer
+            var valueArrow = state.BuildValueBuffer();
             var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
-            bitmapOwner = null; // Arrow took ownership
+            bitmapOwner = null;
 
             var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
                 new[] { bitmapArrow, valueArrow });
@@ -522,21 +565,20 @@ internal static class ArrowArrayBuilder
         var denseData = state.GetDataSpan();
 
         using var scatteredOffsets = new NativeBuffer<int>(rowCount + 1, zeroFill: false);
-        using var bitmapBuf = new NativeBuffer<byte>((rowCount + 7) / 8);
+        int bitmapBytes = (rowCount + 7) / 8;
+        using var bitmapBuf = new NativeBuffer<byte>(bitmapBytes);
 
         var offsets = scatteredOffsets.Span;
         var bitmap = bitmapBuf.ByteSpan;
 
-        // Data buffer can be shared directly — data bytes stay the same,
-        // we just need to build new offsets that repeat the same position for null rows.
+        BuildBitmapFromDefLevels(defLevels, bitmap, rowCount, (byte)state.MaxDefLevel);
+
         int valueIdx = 0;
         for (int i = 0; i < rowCount; i++)
         {
-            if (defLevels[i] == state.MaxDefLevel)
+            if ((bitmap[i >> 3] & (1 << (i & 7))) != 0)
             {
-                offsets[i] = denseOffsets[valueIdx];
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
-                valueIdx++;
+                offsets[i] = denseOffsets[valueIdx++];
             }
             else
             {
@@ -1017,11 +1059,11 @@ internal sealed class ColumnBuildState : IDisposable
     internal readonly int MaxRepLevel;
 
     // Definition levels (nullable columns only) — pooled managed array, never transferred to Arrow
-    private int[]? _defLevels;
+    private byte[]? _defLevels;
     private int _defLevelCount;
 
     // Repetition levels (repeated columns only) — pooled managed array, never transferred to Arrow
-    private int[]? _repLevels;
+    private byte[]? _repLevels;
     private int _repLevelCount;
 
     // Value buffer: stores dense non-null values for fixed-width types and fixed-len byte arrays
@@ -1085,13 +1127,13 @@ internal sealed class ColumnBuildState : IDisposable
 
         if (maxDefLevel > 0)
         {
-            _defLevels = ArrayPool<int>.Shared.Rent(capacity);
+            _defLevels = ArrayPool<byte>.Shared.Rent(capacity);
             _defLevelCount = 0;
         }
 
         if (maxRepLevel > 0)
         {
-            _repLevels = ArrayPool<int>.Shared.Rent(capacity);
+            _repLevels = ArrayPool<byte>.Shared.Rent(capacity);
             _repLevelCount = 0;
         }
 
@@ -1153,20 +1195,20 @@ internal sealed class ColumnBuildState : IDisposable
 
     /// <summary>Returns true if the value at position <paramref name="rowIndex"/> is null.</summary>
     public bool IsNull(int rowIndex) =>
-        MaxDefLevel > 0 && _defLevels![rowIndex] < MaxDefLevel;
+        MaxDefLevel > 0 && _defLevels![rowIndex] < (byte)MaxDefLevel;
 
     /// <summary>Gets the definition levels span (for the build phase).</summary>
-    public ReadOnlySpan<int> DefLevelSpan => _defLevels.AsSpan(0, _defLevelCount);
+    public ReadOnlySpan<byte> DefLevelSpan => _defLevels.AsSpan(0, _defLevelCount);
 
     /// <summary>Gets the repetition levels span (for the build phase).</summary>
-    public ReadOnlySpan<int> RepLevelSpan => _repLevels.AsSpan(0, _repLevelCount);
+    public ReadOnlySpan<byte> RepLevelSpan => _repLevels.AsSpan(0, _repLevelCount);
 
     /// <summary>
     /// Reserves space for <paramref name="count"/> definition levels and returns a writable span.
     /// </summary>
-    public Span<int> ReserveDefLevels(int count)
+    public Span<byte> ReserveDefLevels(int count)
     {
-        if (_defLevels == null) return Span<int>.Empty;
+        if (_defLevels == null) return Span<byte>.Empty;
         var span = _defLevels.AsSpan(_defLevelCount, count);
         _defLevelCount += count;
         return span;
@@ -1175,9 +1217,9 @@ internal sealed class ColumnBuildState : IDisposable
     /// <summary>
     /// Reserves space for <paramref name="count"/> repetition levels and returns a writable span.
     /// </summary>
-    public Span<int> ReserveRepLevels(int count)
+    public Span<byte> ReserveRepLevels(int count)
     {
-        if (_repLevels == null) return Span<int>.Empty;
+        if (_repLevels == null) return Span<byte>.Empty;
         var span = _repLevels.AsSpan(_repLevelCount, count);
         _repLevelCount += count;
         return span;
@@ -1351,6 +1393,66 @@ internal sealed class ColumnBuildState : IDisposable
         _valueCount++;
     }
 
+    /// <summary>
+    /// Batch-writes PLAIN-encoded BYTE_ARRAY values as string/binary views.
+    /// Pre-reserves overflow space to avoid per-value growth checks.
+    /// </summary>
+    internal void WritePlainByteArrayViews(ReadOnlySpan<byte> data, int count)
+    {
+        // First pass: measure total overflow (values > 12 bytes)
+        int totalOverflow = 0;
+        int srcPos = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(srcPos));
+            srcPos += 4 + len;
+            if (len > MaxInlineLength)
+                totalOverflow += len;
+        }
+
+        // Pre-reserve overflow space once
+        if (totalOverflow > 0)
+        {
+            int needed = _dataByteOffset + totalOverflow;
+            if (needed > _dataBuffer!.ByteSpan.Length)
+                _dataBuffer.Grow(needed);
+        }
+
+        // Second pass: write views with no growth checks
+        Span<byte> viewsBuf = _viewsBuffer!.ByteSpan;
+        Span<byte> dataBuf = totalOverflow > 0 ? _dataBuffer!.ByteSpan : Span<byte>.Empty;
+        srcPos = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(srcPos));
+            srcPos += 4;
+            var value = data.Slice(srcPos, len);
+            srcPos += len;
+
+            int viewBase = _viewsCount * ViewEntrySize;
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase), in len);
+
+            if (len <= MaxInlineLength)
+            {
+                viewsBuf.Slice(viewBase + 4, MaxInlineLength).Clear();
+                value.CopyTo(viewsBuf.Slice(viewBase + 4));
+            }
+            else
+            {
+                value.Slice(0, 4).CopyTo(viewsBuf.Slice(viewBase + 4));
+                int bufIdx = 0;
+                MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), in bufIdx);
+                int bufOff = _dataByteOffset;
+                MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), in bufOff);
+                value.CopyTo(dataBuf.Slice(_dataByteOffset));
+                _dataByteOffset += len;
+            }
+
+            _viewsCount++;
+            _valueCount++;
+        }
+    }
+
     /// <summary>Gets the dense views buffer as a read-only byte span (for the build phase).</summary>
     internal ReadOnlySpan<byte> GetDenseViewsSpan() =>
         _viewsBuffer!.ByteSpan.Slice(0, _viewsCount * ViewEntrySize);
@@ -1447,12 +1549,12 @@ internal sealed class ColumnBuildState : IDisposable
     {
         if (_defLevels != null)
         {
-            ArrayPool<int>.Shared.Return(_defLevels);
+            ArrayPool<byte>.Shared.Return(_defLevels);
             _defLevels = null;
         }
         if (_repLevels != null)
         {
-            ArrayPool<int>.Shared.Return(_repLevels);
+            ArrayPool<byte>.Shared.Return(_repLevels);
             _repLevels = null;
         }
         _valueBuffer?.Dispose();
