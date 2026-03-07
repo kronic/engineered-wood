@@ -102,6 +102,14 @@ internal static class ColumnChunkWriter
         // these check defLevels[i] == 0 for null, which only works when maxDefLevel <= 1.
         int[]? valueDefLevels = NormalizeDefLevels(defLevels, maxDefLevel);
 
+        // For decimal FLBA types, reverse bytes from Arrow little-endian to Parquet big-endian.
+        // This must happen before encoding/dictionary/statistics so all downstream code sees big-endian.
+        if (physicalType == PhysicalType.FixedLenByteArray &&
+            array.Data.DataType is Apache.Arrow.Types.Decimal128Type or Apache.Arrow.Types.Decimal256Type)
+        {
+            array = ReverseFlbaDecimalBytes(array, typeLength);
+        }
+
         // Try dictionary encoding (uses normalized levels for null detection)
         var dictResult = DictionaryEncoder.TryEncode(
             array, physicalType, typeLength, valueDefLevels, nonNullCount, options);
@@ -1157,6 +1165,36 @@ internal static class ColumnChunkWriter
         for (int i = 0; i < defLevels.Length; i++)
             normalized[i] = defLevels[i] >= maxDefLevel ? 1 : 0;
         return normalized;
+    }
+
+    /// <summary>
+    /// Creates a copy of an FLBA array with each value's bytes reversed (little-endian → big-endian).
+    /// Used for decimal FLBA columns where Arrow stores little-endian but Parquet requires big-endian.
+    /// </summary>
+    private static IArrowArray ReverseFlbaDecimalBytes(IArrowArray array, int typeLength)
+    {
+        var data = array.Data;
+        var sourceValues = data.Buffers[1].Span;
+        int count = array.Length;
+
+        var reversed = new byte[count * typeLength];
+        for (int i = 0; i < count; i++)
+        {
+            var src = sourceValues.Slice(i * typeLength, typeLength);
+            var dst = reversed.AsSpan(i * typeLength, typeLength);
+            for (int j = 0; j < typeLength; j++)
+                dst[j] = src[typeLength - 1 - j];
+        }
+
+        // Build new ArrayData with reversed value buffer, preserving null bitmap
+        var buffers = new ArrowBuffer[]
+        {
+            data.Buffers[0], // null bitmap (unchanged)
+            new ArrowBuffer(reversed)
+        };
+        var newData = new Apache.Arrow.ArrayData(
+            data.DataType, count, data.NullCount, data.Offset, buffers);
+        return Apache.Arrow.ArrowArrayFactory.BuildArray(newData);
     }
 
     /// <summary>Minimum bit width to represent values 0..maxValue.</summary>

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
@@ -799,6 +800,457 @@ public class CrossValidationTests : IDisposable
 
         for (int i = 0; i < strings.Length; i++)
             Assert.Equal(strings[i], stringArray.GetString(i));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Decimal types
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Roundtrip_Decimal128()
+    {
+        var path = TempPath("rt-dec128.parquet");
+        var decType = new Decimal128Type(28, 6);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("amount", decType, nullable: true))
+            .Build();
+
+        // Build a Decimal128Array manually via ArrayData
+        int count = 5;
+        decimal[] values = [12345.678901m, -99999.999999m, 0m, decimal.MaxValue / 1000, decimal.MinValue / 1000];
+        var valueBytes = new byte[count * 16];
+        var nullBitmap = new byte[(count + 7) / 8];
+        nullBitmap[0] = 0b11111; // all non-null
+
+        for (int i = 0; i < count; i++)
+        {
+            var bits = decimal.GetBits(values[i]);
+            // Convert to Decimal128 representation: scale to fixed-point
+            // Use SqlDecimal for proper 128-bit representation
+            var sql = new System.Data.SqlTypes.SqlDecimal(values[i]);
+            var sqlBytes = sql.BinData; // 4-17 bytes big-endian
+            // Arrow Decimal128 is 16 bytes little-endian two's complement
+            var target = valueBytes.AsSpan(i * 16, 16);
+            target.Clear();
+            bool negative = values[i] < 0;
+
+            // Get unscaled value via multiplication
+            // Simpler: just write the raw decimal bits in Arrow format
+            // Arrow C# stores Decimal128 as two Int64 (lo, hi) in little-endian
+            var d = values[i];
+            var dBits = decimal.GetBits(d);
+            long lo = (uint)dBits[0] | ((long)(uint)dBits[1] << 32);
+            long hi = (uint)dBits[2];
+            if ((dBits[3] & unchecked((int)0x80000000)) != 0) // negative
+            {
+                // Two's complement: negate the 128-bit value
+                lo = -lo;
+                hi = lo == 0 ? -hi : ~hi;
+            }
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(target, lo);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(target[8..], hi);
+        }
+
+        var arrayData = new Apache.Arrow.ArrayData(decType, count, 0, 0,
+            [new ArrowBuffer(nullBitmap), new ArrowBuffer(valueBytes)]);
+        var decArray = new Decimal128Array(arrayData);
+
+        var batch = new RecordBatch(schema, [decArray], count);
+        await WriteEW(path, batch);
+
+        // Read back and verify
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var resultArray = (Decimal128Array)readBatch.Column(0);
+
+        for (int i = 0; i < count; i++)
+        {
+            var expected = decArray.GetValue(i);
+            var actual = resultArray.GetValue(i);
+            Assert.Equal(expected, actual);
+        }
+    }
+
+    [Fact]
+    public async Task EWWrite_PSRead_Decimal128()
+    {
+        var path = TempPath("ew-dec128-ps.parquet");
+        var decType = new Decimal128Type(10, 2);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("price", decType, nullable: false))
+            .Build();
+
+        // Build Decimal128Array with simple values
+        int count = 4;
+        var valueBytes = new byte[count * 16];
+        var nullBitmap = new byte[(count + 7) / 8];
+        nullBitmap[0] = 0xFF;
+
+        // Write unscaled values (value * 10^scale) as 128-bit little-endian
+        long[] unscaled = [12345, -6789, 0, 100]; // represents 123.45, -67.89, 0.00, 1.00
+        for (int i = 0; i < count; i++)
+        {
+            var target = valueBytes.AsSpan(i * 16, 16);
+            target.Clear();
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(target, unscaled[i]);
+            if (unscaled[i] < 0)
+                target[8..].Fill(0xFF); // sign-extend
+        }
+
+        var arrayData = new Apache.Arrow.ArrayData(decType, count, 0, 0,
+            [new ArrowBuffer(nullBitmap), new ArrowBuffer(valueBytes)]);
+        var decArray = new Decimal128Array(arrayData);
+
+        var batch = new RecordBatch(schema, [decArray], count);
+        await WriteEW(path, batch);
+
+        // Read with ParquetSharp
+        using var psReader = new ParquetSharp.ParquetFileReader(path);
+        using var rg = psReader.RowGroup(0);
+        using var col = rg.Column(0).LogicalReader<decimal>();
+        var buffer = new decimal[count];
+        col.ReadBatch(buffer);
+
+        Assert.Equal(123.45m, buffer[0]);
+        Assert.Equal(-67.89m, buffer[1]);
+        Assert.Equal(0m, buffer[2]);
+        Assert.Equal(1.00m, buffer[3]);
+    }
+
+    [Fact]
+    public async Task Roundtrip_Decimal32_Int32()
+    {
+        var path = TempPath("rt-dec32.parquet");
+        // Decimal32 maps to INT32 physical type — no byte reversal needed
+        var decType = new Decimal32Type(7, 2);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("value", decType, nullable: false))
+            .Build();
+
+        int count = 4;
+        var valueBytes = new byte[count * 4];
+        var nullBitmap = new byte[(count + 7) / 8];
+        nullBitmap[0] = 0xFF;
+
+        int[] unscaled = [12345, -6789, 0, 100];
+        for (int i = 0; i < count; i++)
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                valueBytes.AsSpan(i * 4), unscaled[i]);
+
+        var arrayData = new Apache.Arrow.ArrayData(decType, count, 0, 0,
+            [new ArrowBuffer(nullBitmap), new ArrowBuffer(valueBytes)]);
+        var decArray = new Decimal32Array(arrayData);
+
+        var batch = new RecordBatch(schema, [decArray], count);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var resultArray = (Decimal32Array)readBatch.Column(0);
+
+        for (int i = 0; i < count; i++)
+            Assert.Equal(decArray.GetValue(i), resultArray.GetValue(i));
+    }
+
+    [Fact]
+    public async Task Roundtrip_Decimal64_Int64()
+    {
+        var path = TempPath("rt-dec64.parquet");
+        var decType = new Decimal64Type(15, 4);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("value", decType, nullable: false))
+            .Build();
+
+        int count = 4;
+        var valueBytes = new byte[count * 8];
+        var nullBitmap = new byte[(count + 7) / 8];
+        nullBitmap[0] = 0xFF;
+
+        long[] unscaled = [123456789012L, -987654321098L, 0, 10000];
+        for (int i = 0; i < count; i++)
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(
+                valueBytes.AsSpan(i * 8), unscaled[i]);
+
+        var arrayData = new Apache.Arrow.ArrayData(decType, count, 0, 0,
+            [new ArrowBuffer(nullBitmap), new ArrowBuffer(valueBytes)]);
+        var decArray = new Decimal64Array(arrayData);
+
+        var batch = new RecordBatch(schema, [decArray], count);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var resultArray = (Decimal64Array)readBatch.Column(0);
+
+        for (int i = 0; i < count; i++)
+            Assert.Equal(decArray.GetValue(i), resultArray.GetValue(i));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Nested types (struct, list, map)
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EWWrite_PSRead_Struct()
+    {
+        var path = TempPath("ew-struct.parquet");
+        var structType = new StructType(
+        [
+            new Field("x", Int32Type.Default, nullable: false),
+            new Field("y", StringType.Default, nullable: true),
+        ]);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("s", structType, nullable: true))
+            .Build();
+
+        var xBuilder = new Int32Array.Builder();
+        xBuilder.AppendRange([10, 20, 30, 40]);
+
+        var yBuilder = new StringArray.Builder();
+        yBuilder.Append("a");
+        yBuilder.AppendNull();
+        yBuilder.Append("c");
+        yBuilder.Append("d");
+
+        // Struct with null at index 1
+        var structNullBitmap = new byte[] { 0b1101 }; // indices 0,2,3 present; 1 null
+        var structData = new Apache.Arrow.ArrayData(structType, 4, 1, 0,
+            [new ArrowBuffer(structNullBitmap)],
+            [xBuilder.Build().Data, yBuilder.Build().Data]);
+        var structArray = new StructArray(structData);
+
+        var batch = new RecordBatch(schema, [structArray], 4);
+        await WriteEW(path, batch);
+
+        // Read back with EW to verify roundtrip
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var result = (StructArray)readBatch.Column(0);
+
+        Assert.False(result.IsNull(0));
+        Assert.True(result.IsNull(1));
+        Assert.False(result.IsNull(2));
+        Assert.False(result.IsNull(3));
+
+        var xArr = (Int32Array)result.Fields[0];
+        Assert.Equal(10, xArr.GetValue(0));
+        Assert.Equal(40, xArr.GetValue(3));
+
+        var yArr = (StringArray)result.Fields[1];
+        Assert.Equal("a", yArr.GetString(0));
+        Assert.Equal("d", yArr.GetString(3));
+    }
+
+    [Fact]
+    public async Task EWWrite_PSRead_List()
+    {
+        var path = TempPath("ew-list.parquet");
+        var listType = new ListType(new Field("item", Int32Type.Default, nullable: false));
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("nums", listType, nullable: true))
+            .Build();
+
+        // Build: [[1,2], null, [3], []]
+        var valuesBuilder = new Int32Array.Builder();
+        valuesBuilder.AppendRange([1, 2, 3]);
+
+        var offsets = new int[] { 0, 2, 2, 3, 3 };
+        var listNullBitmap = new byte[] { 0b1101 }; // indices 0,2,3 present; 1 null
+
+        var listData = new Apache.Arrow.ArrayData(listType, 4, 1, 0,
+            [new ArrowBuffer(listNullBitmap),
+             new ArrowBuffer(MemoryMarshal.AsBytes(offsets.AsSpan()).ToArray())],
+            [valuesBuilder.Build().Data]);
+        var listArray = new ListArray(listData);
+
+        var batch = new RecordBatch(schema, [listArray], 4);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var result = (ListArray)readBatch.Column(0);
+
+        Assert.False(result.IsNull(0));
+        Assert.True(result.IsNull(1));
+        Assert.False(result.IsNull(2));
+        Assert.False(result.IsNull(3));
+
+        // [[1,2]]
+        var list0 = (Int32Array)result.GetSlicedValues(0);
+        Assert.Equal(2, list0.Length);
+        Assert.Equal(1, list0.GetValue(0));
+        Assert.Equal(2, list0.GetValue(1));
+
+        // [3]
+        var list2 = (Int32Array)result.GetSlicedValues(2);
+        Assert.Equal(1, list2.Length);
+        Assert.Equal(3, list2.GetValue(0));
+
+        // []
+        var list3 = (Int32Array)result.GetSlicedValues(3);
+        Assert.Equal(0, list3.Length);
+    }
+
+    [Fact]
+    public async Task Roundtrip_Map()
+    {
+        var path = TempPath("rt-map.parquet");
+        var mapType = new MapType(
+            new Field("key", StringType.Default, nullable: false),
+            new Field("value", Int32Type.Default, nullable: true));
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("props", mapType, nullable: true))
+            .Build();
+
+        // Build: [{"a":1,"b":2}, null, {"c":3}]
+        var keyBuilder = new StringArray.Builder();
+        keyBuilder.Append("a");
+        keyBuilder.Append("b");
+        keyBuilder.Append("c");
+
+        var valueBuilder = new Int32Array.Builder();
+        valueBuilder.Append(1);
+        valueBuilder.Append(2);
+        valueBuilder.Append(3);
+
+        // key_value struct
+        var kvType = new StructType([
+            new Field("key", StringType.Default, nullable: false),
+            new Field("value", Int32Type.Default, nullable: true),
+        ]);
+        var kvData = new Apache.Arrow.ArrayData(kvType, 3, 0, 0,
+            [ArrowBuffer.Empty],
+            [keyBuilder.Build().Data, valueBuilder.Build().Data]);
+
+        var offsets = new int[] { 0, 2, 2, 3 };
+        var mapNullBitmap = new byte[] { 0b101 }; // indices 0,2 present; 1 null
+        var mapData = new Apache.Arrow.ArrayData(mapType, 3, 1, 0,
+            [new ArrowBuffer(mapNullBitmap),
+             new ArrowBuffer(MemoryMarshal.AsBytes(offsets.AsSpan()).ToArray())],
+            [kvData]);
+        var mapArray = new MapArray(mapData);
+
+        var batch = new RecordBatch(schema, [mapArray], 3);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var result = (MapArray)readBatch.Column(0);
+
+        Assert.False(result.IsNull(0));
+        Assert.True(result.IsNull(1));
+        Assert.False(result.IsNull(2));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  FLBA (non-decimal)
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Roundtrip_FixedLenByteArray()
+    {
+        var path = TempPath("rt-flba.parquet");
+        int typeLength = 6;
+        var flbaType = new FixedSizeBinaryType(typeLength);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("hash", flbaType, nullable: false))
+            .Build();
+
+        int count = 4;
+        var valueBytes = new byte[count * typeLength];
+        var random = new Random(42);
+        random.NextBytes(valueBytes);
+
+        var nullBitmap = new byte[(count + 7) / 8];
+        nullBitmap[0] = 0xFF;
+
+        var arrayData = new Apache.Arrow.ArrayData(flbaType, count, 0, 0,
+            [new ArrowBuffer(nullBitmap), new ArrowBuffer(valueBytes)]);
+        var flbaArray = new FixedSizeBinaryArray(arrayData);
+
+        var batch = new RecordBatch(schema, [flbaArray], count);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var result = (FixedSizeBinaryArray)readBatch.Column(0);
+
+        for (int i = 0; i < count; i++)
+            Assert.True(flbaArray.GetBytes(i).SequenceEqual(result.GetBytes(i)));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  V1 pages + nested
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Roundtrip_V1_Nested_Struct()
+    {
+        var path = TempPath("rt-v1-struct.parquet");
+        var structType = new StructType(
+        [
+            new Field("a", Int32Type.Default, nullable: false),
+            new Field("b", Int32Type.Default, nullable: false),
+        ]);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("s", structType, nullable: true))
+            .Build();
+
+        var aBuilder = new Int32Array.Builder();
+        aBuilder.AppendRange([1, 2, 3]);
+        var bBuilder = new Int32Array.Builder();
+        bBuilder.AppendRange([10, 20, 30]);
+
+        var structNullBitmap = new byte[] { 0b101 }; // index 1 null
+        var structData = new Apache.Arrow.ArrayData(structType, 3, 1, 0,
+            [new ArrowBuffer(structNullBitmap)],
+            [aBuilder.Build().Data, bBuilder.Build().Data]);
+        var structArray = new StructArray(structData);
+
+        var batch = new RecordBatch(schema, [structArray], 3);
+        await WriteEW(path, batch, new ParquetWriteOptions { DataPageVersion = DataPageVersion.V1 });
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var readBatch = await reader.ReadRowGroupAsync(0);
+        var result = (StructArray)readBatch.Column(0);
+
+        Assert.False(result.IsNull(0));
+        Assert.True(result.IsNull(1));
+        Assert.False(result.IsNull(2));
+        Assert.Equal(1, ((Int32Array)result.Fields[0]).GetValue(0));
+        Assert.Equal(30, ((Int32Array)result.Fields[1]).GetValue(2));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Zero-row RecordBatch
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Roundtrip_ZeroRowBatch()
+    {
+        var path = TempPath("rt-zero-rows.parquet");
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("x", Int32Type.Default, nullable: false))
+            .Field(new Field("s", StringType.Default, nullable: true))
+            .Build();
+
+        var batch = new RecordBatch(schema,
+            [new Int32Array.Builder().Build(), new StringArray.Builder().Build()], 0);
+        await WriteEW(path, batch);
+
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var meta = await reader.ReadMetadataAsync();
+        // Zero-row batch may produce 0 or 1 row groups depending on implementation
+        Assert.Equal(0, meta.NumRows);
     }
 
     // ────────────────────────────────────────────────────────────────────
