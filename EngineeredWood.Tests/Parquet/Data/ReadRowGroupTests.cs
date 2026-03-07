@@ -2115,4 +2115,110 @@ public class ReadRowGroupTests
         Assert.Equal(2, row0.GetValue(1));
         Assert.Equal(3, row0.GetValue(2));
     }
+
+    // ---- ReadAllAsync streaming ----
+
+    [Fact]
+    public async Task ReadAllAsync_StreamsAllRowGroups()
+    {
+        // Write a file with multiple row groups via auto-split
+        var path = Path.Combine(Path.GetTempPath(), $"ew-readall-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var schema = new Apache.Arrow.Schema.Builder()
+                .Field(new Field("x", Int32Type.Default, nullable: false))
+                .Build();
+            var builder = new Int32Array.Builder();
+            for (int i = 0; i < 500; i++) builder.Append(i);
+            var batch = new RecordBatch(schema, [builder.Build()], 500);
+
+            await using (var wf = new LocalSequentialFile(path))
+            await using (var writer = new ParquetFileWriter(wf, ownsFile: false,
+                new ParquetWriteOptions { RowGroupMaxRows = 200 }))
+            {
+                await writer.WriteRowGroupAsync(batch);
+                await writer.CloseAsync();
+            }
+
+            await using var file = new LocalRandomAccessFile(path);
+            using var reader = new ParquetFileReader(file, ownsFile: false);
+
+            var batches = new List<RecordBatch>();
+            await foreach (var b in reader.ReadAllAsync())
+                batches.Add(b);
+
+            Assert.Equal(3, batches.Count); // 200, 200, 100
+            Assert.Equal(200, batches[0].Length);
+            Assert.Equal(200, batches[1].Length);
+            Assert.Equal(100, batches[2].Length);
+
+            // Verify data continuity
+            Assert.Equal(0, ((Int32Array)batches[0].Column(0)).GetValue(0));
+            Assert.Equal(200, ((Int32Array)batches[1].Column(0)).GetValue(0));
+            Assert.Equal(400, ((Int32Array)batches[2].Column(0)).GetValue(0));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_WithColumnProjection()
+    {
+        await using var file = new LocalRandomAccessFile(TestData.GetPath("alltypes_plain.parquet"));
+        using var reader = new ParquetFileReader(file, ownsFile: false);
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in reader.ReadAllAsync(["id", "bool_col"]))
+            batches.Add(b);
+
+        Assert.Single(batches); // single row group
+        Assert.Equal(2, batches[0].Schema.FieldsList.Count);
+        Assert.Equal("id", batches[0].Schema.FieldsList[0].Name);
+        Assert.Equal("bool_col", batches[0].Schema.FieldsList[1].Name);
+        Assert.Equal(8, batches[0].Length);
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_EmptyFile_YieldsNothing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ew-readall-empty-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            await using (var wf = new LocalSequentialFile(path))
+            await using (var writer = new ParquetFileWriter(wf, ownsFile: false))
+                await writer.CloseAsync();
+
+            await using var file = new LocalRandomAccessFile(path);
+            using var reader = new ParquetFileReader(file, ownsFile: false);
+
+            var batches = new List<RecordBatch>();
+            await foreach (var b in reader.ReadAllAsync())
+                batches.Add(b);
+
+            Assert.Empty(batches);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_PreCancelledToken_Throws()
+    {
+        await using var file = new LocalRandomAccessFile(TestData.GetPath("alltypes_plain.parquet"));
+        using var reader = new ParquetFileReader(file, ownsFile: false);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in reader.ReadAllAsync(cancellationToken: cts.Token))
+            {
+            }
+        });
+    }
 }

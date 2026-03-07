@@ -148,6 +148,27 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Streams all row groups as an async sequence of <see cref="RecordBatch"/>.
+    /// Each row group is read, decoded, and yielded one at a time.
+    /// </summary>
+    /// <param name="columnNames">
+    /// Optional list of column names to read. If null, reads all columns.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An async enumerable of RecordBatches, one per row group.</returns>
+    public async IAsyncEnumerable<RecordBatch> ReadAllAsync(
+        IReadOnlyList<string>? columnNames = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
+    {
+        var metadata = await ReadMetadataAsync(cancellationToken).ConfigureAwait(false);
+
+        for (int i = 0; i < metadata.RowGroups.Count; i++)
+            yield return await ReadRowGroupAsync(i, columnNames, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Reads each column sequentially: read I/O buffer, decode, release buffer before the next.
     /// Only one column's I/O buffer in memory at a time.
     /// </summary>
