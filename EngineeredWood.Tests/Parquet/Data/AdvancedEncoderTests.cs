@@ -229,4 +229,116 @@ public class AdvancedEncoderTests
 
         state.Dispose();
     }
+
+    // ── DeltaByteArray ──
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_SharedPrefixes()
+    {
+        var strings = new[] { "prefix_abc", "prefix_abd", "prefix_xyz", "other_123" };
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_NoSharedPrefixes()
+    {
+        var strings = new[] { "alpha", "bravo", "charlie", "delta" };
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_EmptyStrings()
+    {
+        var strings = new[] { "", "", "", "" };
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_MixedEmpty()
+    {
+        var strings = new[] { "hello", "", "hello", "" };
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_SingleValue()
+    {
+        AssertDbaRoundTrip(["only"]);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_IdenticalValues()
+    {
+        var strings = Enumerable.Repeat("same", 200).ToArray();
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_RoundTrip_SortedUrls()
+    {
+        var strings = Enumerable.Range(0, 500)
+            .Select(i => $"https://example.com/path/to/resource/{i:D5}")
+            .ToArray();
+        AssertDbaRoundTrip(strings);
+    }
+
+    [Fact]
+    public void DeltaByteArray_SmallerThanDlba_ForSortedPrefixData()
+    {
+        // Sorted strings with long common prefixes — DBA should be much smaller
+        var strings = Enumerable.Range(0, 1000)
+            .Select(i => $"https://cdn.example.com/assets/images/product/{i:D6}.jpg")
+            .ToArray();
+
+        // Encode with DBA
+        var (offsets, data) = BuildOffsetsAndData(strings);
+        int maxSize = DeltaByteArrayEncoder.EstimateMaxSize(strings.Length, data.Length);
+        var dbaDest = new byte[maxSize];
+        int dbaLen = DeltaByteArrayEncoder.Encode(offsets, data, 0, strings.Length, strings.Length, null, dbaDest);
+
+        // Encode with DLBA
+        var dlbaEncoded = DeltaLengthByteArrayEncoder.Encode(offsets, data, strings.Length);
+
+        Assert.True(dbaLen < dlbaEncoded.Length,
+            $"DBA ({dbaLen}) should be smaller than DLBA ({dlbaEncoded.Length}) for sorted prefix data");
+    }
+
+    private static void AssertDbaRoundTrip(string[] strings)
+    {
+        var (offsets, data) = BuildOffsetsAndData(strings);
+
+        int maxSize = DeltaByteArrayEncoder.EstimateMaxSize(strings.Length, data.Length);
+        var dest = new byte[maxSize];
+        int encodedLen = DeltaByteArrayEncoder.Encode(
+            offsets, data, 0, strings.Length, strings.Length, null, dest);
+
+        // Decode using the read-path decoder
+        var state = new ColumnBuildState(
+            PhysicalType.ByteArray, maxDefLevel: 0, maxRepLevel: 0, capacity: strings.Length,
+            ByteArrayOutputKind.Default);
+        DeltaByteArrayDecoder.Decode(dest.AsSpan(0, encodedLen), strings.Length, state);
+
+        var field = new Apache.Arrow.Field("test", Apache.Arrow.Types.StringType.Default, false);
+        var array = ArrowArrayBuilder.Build(state, field, strings.Length);
+        var stringArray = (Apache.Arrow.StringArray)array;
+
+        for (int i = 0; i < strings.Length; i++)
+            Assert.Equal(strings[i], stringArray.GetString(i));
+
+        state.Dispose();
+    }
+
+    private static (int[] Offsets, byte[] Data) BuildOffsetsAndData(string[] strings)
+    {
+        var offsets = new int[strings.Length + 1];
+        offsets[0] = 0;
+        for (int i = 0; i < strings.Length; i++)
+            offsets[i + 1] = offsets[i] + System.Text.Encoding.UTF8.GetByteCount(strings[i]);
+
+        var data = new byte[offsets[strings.Length]];
+        for (int i = 0; i < strings.Length; i++)
+            System.Text.Encoding.UTF8.GetBytes(strings[i]).CopyTo(data.AsSpan(offsets[i]));
+
+        return (offsets, data);
+    }
 }

@@ -538,7 +538,7 @@ internal static class ColumnChunkWriter
         // Encode values into reusable buffer with type-aware V2 encoding
         int uncompressedValuesSize = EncodeValuesToBuffer(
             array, offset, numValues, nonNullCount, physicalType, typeLength,
-            valueDefLevels, out valueEncoding);
+            valueDefLevels, options, out valueEncoding);
 
         // Compress values section only (V2: levels are uncompressed)
         int compressedValuesLen = CompressTo(
@@ -690,16 +690,18 @@ internal static class ColumnChunkWriter
     private static int EncodeValuesToBuffer(
         IArrowArray array, int offset, int numValues, int nonNullCount,
         PhysicalType physicalType, int typeLength, int[]? defLevels,
-        out Encoding encoding)
+        ParquetWriteOptions options, out Encoding encoding)
     {
+        bool useDba = options.ByteArrayEncoding == ByteArrayEncoding.DeltaByteArray;
+
         if (nonNullCount == 0)
         {
-            encoding = GetV2Encoding(physicalType);
+            encoding = GetV2Encoding(physicalType, useDba);
             EnsureValuesBuffer(0);
             return 0;
         }
 
-        encoding = GetV2Encoding(physicalType);
+        encoding = GetV2Encoding(physicalType, useDba);
         return physicalType switch
         {
             PhysicalType.Boolean => EncodeBooleanValuesRleToBuffer(array, offset, numValues, nonNullCount, defLevels),
@@ -707,17 +709,20 @@ internal static class ColumnChunkWriter
             PhysicalType.Int64 => EncodeDeltaInt64ToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.Float => EncodeBssSingleToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.Double => EncodeBssDoubleToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.ByteArray when useDba => EncodeDbaByteArrayToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.ByteArray => EncodeDlbaToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.FixedLenByteArray when useDba => EncodeDbaFlbaToBuffer(array, offset, numValues, nonNullCount, defLevels, typeLength),
             _ => EncodePlainToBuffer(array, offset, numValues, nonNullCount, physicalType, typeLength, defLevels),
         };
     }
 
-    private static Encoding GetV2Encoding(PhysicalType physicalType) => physicalType switch
+    private static Encoding GetV2Encoding(PhysicalType physicalType, bool useDba) => physicalType switch
     {
         PhysicalType.Boolean => Encoding.Rle,
         PhysicalType.Int32 or PhysicalType.Int64 => Encoding.DeltaBinaryPacked,
         PhysicalType.Float or PhysicalType.Double => Encoding.ByteStreamSplit,
-        PhysicalType.ByteArray => Encoding.DeltaLengthByteArray,
+        PhysicalType.ByteArray => useDba ? Encoding.DeltaByteArray : Encoding.DeltaLengthByteArray,
+        PhysicalType.FixedLenByteArray when useDba => Encoding.DeltaByteArray,
         _ => Encoding.Plain,
     };
 
@@ -865,6 +870,42 @@ internal static class ColumnChunkWriter
         }
 
         return totalLen;
+    }
+
+    private static int EncodeDbaByteArrayToBuffer(
+        IArrowArray array, int offset, int numValues, int nonNullCount, int[]? defLevels)
+    {
+        var data = array.Data;
+        ReadOnlySpan<int> arrowOffsets = MemoryMarshal.Cast<byte, int>(data.Buffers[1].Span);
+        ReadOnlySpan<byte> arrowData = data.Buffers[2].Span;
+
+        // Compute total data bytes for buffer sizing
+        int totalDataBytes = 0;
+        for (int i = 0; i < numValues; i++)
+        {
+            if (defLevels != null && defLevels[offset + i] == 0) continue;
+            totalDataBytes += arrowOffsets[offset + i + 1] - arrowOffsets[offset + i];
+        }
+
+        int maxSize = DeltaByteArrayEncoder.EstimateMaxSize(nonNullCount, totalDataBytes);
+        EnsureValuesBuffer(maxSize);
+
+        return DeltaByteArrayEncoder.Encode(
+            arrowOffsets, arrowData, offset, numValues, nonNullCount, defLevels, t_valuesBuffer!);
+    }
+
+    private static int EncodeDbaFlbaToBuffer(
+        IArrowArray array, int offset, int numValues, int nonNullCount,
+        int[]? defLevels, int typeLength)
+    {
+        var valueBuffer = array.Data.Buffers[1].Span;
+        int totalDataBytes = nonNullCount * typeLength;
+
+        int maxSize = DeltaByteArrayEncoder.EstimateMaxSize(nonNullCount, totalDataBytes);
+        EnsureValuesBuffer(maxSize);
+
+        return DeltaByteArrayEncoder.EncodeFixed(
+            valueBuffer, typeLength, offset, numValues, nonNullCount, defLevels, t_valuesBuffer!);
     }
 
     private static int EncodePlainToBuffer(

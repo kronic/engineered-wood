@@ -704,6 +704,104 @@ public class CrossValidationTests : IDisposable
     }
 
     // ────────────────────────────────────────────────────────────────────
+    //  DeltaByteArray encoding
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EWWrite_PSRead_DeltaByteArray_Strings()
+    {
+        var path = TempPath("ew-dba-strings.parquet");
+        var strings = Enumerable.Range(0, 200)
+            .Select(i => $"https://example.com/api/v2/resource/{i:D4}")
+            .ToArray();
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("url", StringType.Default, nullable: false))
+            .Build();
+        var builder = new StringArray.Builder();
+        foreach (var s in strings) builder.Append(s);
+        var batch = new RecordBatch(schema, [builder.Build()], strings.Length);
+
+        var options = new ParquetWriteOptions
+        {
+            ByteArrayEncoding = ByteArrayEncoding.DeltaByteArray,
+            DictionaryEnabled = false,
+        };
+        await WriteEW(path, batch, options);
+
+        using var reader = new ParquetSharp.ParquetFileReader(path);
+        using var rg = reader.RowGroup(0);
+        using var col = rg.Column(0).LogicalReader<string>();
+        var buffer = new string[strings.Length];
+        col.ReadBatch(buffer);
+        Assert.Equal(strings, buffer);
+    }
+
+    [Fact]
+    public async Task EWWrite_PSRead_DeltaByteArray_NullableStrings()
+    {
+        var path = TempPath("ew-dba-nullable.parquet");
+        var values = new string?[] { "aaa", null, "aab", "aac", null, "zzz" };
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("s", StringType.Default, nullable: true))
+            .Build();
+        var builder = new StringArray.Builder();
+        foreach (var s in values)
+        {
+            if (s == null) builder.AppendNull();
+            else builder.Append(s);
+        }
+        var batch = new RecordBatch(schema, [builder.Build()], values.Length);
+
+        var options = new ParquetWriteOptions
+        {
+            ByteArrayEncoding = ByteArrayEncoding.DeltaByteArray,
+            DictionaryEnabled = false,
+        };
+        await WriteEW(path, batch, options);
+
+        using var reader = new ParquetSharp.ParquetFileReader(path);
+        using var rg = reader.RowGroup(0);
+        using var col = rg.Column(0).LogicalReader<string?>();
+        var buffer = new string?[values.Length];
+        col.ReadBatch(buffer);
+        Assert.Equal(values, buffer);
+    }
+
+    [Fact]
+    public async Task EWRoundTrip_DeltaByteArray_Strings()
+    {
+        var path = TempPath("ew-dba-rt.parquet");
+        var strings = Enumerable.Range(0, 500)
+            .Select(i => $"sensor-{i / 10:D3}/metric-{i % 10:D2}")
+            .ToArray();
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("key", StringType.Default, nullable: false))
+            .Build();
+        var builder = new StringArray.Builder();
+        foreach (var s in strings) builder.Append(s);
+        var batch = new RecordBatch(schema, [builder.Build()], strings.Length);
+
+        var options = new ParquetWriteOptions
+        {
+            ByteArrayEncoding = ByteArrayEncoding.DeltaByteArray,
+            DictionaryEnabled = false,
+        };
+        await WriteEW(path, batch, options);
+
+        // Read back with EW
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false);
+        var result = await reader.ReadRowGroupAsync(0);
+        var stringArray = (StringArray)result.Column(0);
+
+        for (int i = 0; i < strings.Length; i++)
+            Assert.Equal(strings[i], stringArray.GetString(i));
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     //  Helpers
     // ────────────────────────────────────────────────────────────────────
 

@@ -13,6 +13,25 @@ public enum DataPageVersion
 }
 
 /// <summary>
+/// Controls the non-dictionary fallback encoding for BYTE_ARRAY and FIXED_LEN_BYTE_ARRAY columns
+/// when using V2 data pages.
+/// </summary>
+public enum ByteArrayEncoding
+{
+    /// <summary>
+    /// DELTA_LENGTH_BYTE_ARRAY: delta-encodes value lengths, concatenates raw bytes.
+    /// Good general-purpose encoding for variable-length data. This is the default.
+    /// </summary>
+    DeltaLengthByteArray,
+
+    /// <summary>
+    /// DELTA_BYTE_ARRAY: delta-encodes prefix lengths and suffix lengths, then stores suffixes.
+    /// Most effective for sorted or prefix-heavy data (URLs, file paths, dictionary-like keys).
+    /// </summary>
+    DeltaByteArray,
+}
+
+/// <summary>
 /// Options that control how Arrow data is written to Parquet files.
 /// </summary>
 public sealed class ParquetWriteOptions
@@ -57,6 +76,13 @@ public sealed class ParquetWriteOptions
     /// Maximum uncompressed byte size per row group. Default is 128 MB.
     /// </summary>
     public long RowGroupMaxBytes { get; init; } = 128L * 1024 * 1024;
+
+    /// <summary>
+    /// Non-dictionary fallback encoding for BYTE_ARRAY and FIXED_LEN_BYTE_ARRAY columns
+    /// when using V2 data pages. Default is <see cref="ByteArrayEncoding.DeltaLengthByteArray"/>.
+    /// Set to <see cref="ByteArrayEncoding.DeltaByteArray"/> for sorted or prefix-heavy data.
+    /// </summary>
+    public ByteArrayEncoding ByteArrayEncoding { get; init; } = ByteArrayEncoding.DeltaLengthByteArray;
 
     /// <summary>
     /// Application identifier written to the file footer's <c>created_by</c> field.
