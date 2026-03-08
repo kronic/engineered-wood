@@ -1,26 +1,38 @@
 # Architecture
 
-EngineeredWood is a .NET 10 library for reading and writing Apache Parquet files as Apache Arrow `RecordBatch` objects. It is designed around cloud storage access patterns — batched range reads, concurrent column chunk I/O, and pooled buffer management — rather than the traditional single-cursor `Stream` abstraction.
+EngineeredWood is a .NET 10 monorepo for reading and writing columnar file formats — Apache Parquet and Apache ORC — as Apache Arrow `RecordBatch` objects. It is designed around cloud storage access patterns — batched range reads, concurrent column chunk I/O, and pooled buffer management — rather than the traditional single-cursor `Stream` abstraction.
 
 This document describes the implementation. For usage and build instructions, see `README.md`.
 
 ## Project layout
 
 ```
-EngineeredWood/                 Main library (~63 source files)
-  IO/                           Random-access and sequential I/O abstractions
-    Azure/                      Azure Blob Storage backends
-    Local/                      Local file backends
-  Parquet/                      Format implementation
-    Thrift/                     Thrift Compact Protocol codec
-    Metadata/                   Footer metadata model and (de)serialization
-    Schema/                     Schema tree with definition/repetition levels
-    Data/                       Column encoding/decoding, Arrow conversion
-    Compression/                Codec dispatch (read and write)
-EngineeredWood.Tests/           xUnit tests
-EngineeredWood.Benchmarks/      BenchmarkDotNet suites
-EngineeredWood.Compatibility/   92-file cross-tool validation suite
-parquet-testing/                Git submodule with 100+ sample files
+src/
+  EngineeredWood.Core/            Shared abstractions (~15 source files)
+    IO/                           Random-access and sequential I/O abstractions
+      Local/                      Local file backends
+    Compression/                  Codec dispatch (compress + decompress)
+    Arrow/                        NativeAllocator, NativeBuffer<T>
+  EngineeredWood.Parquet/         Parquet format implementation (~63 source files)
+    Parquet/
+      Thrift/                     Thrift Compact Protocol codec
+      Metadata/                   Footer metadata model and (de)serialization
+      Schema/                     Schema tree with definition/repetition levels
+      Data/                       Column encoding/decoding, Arrow conversion
+  EngineeredWood.Orc/             ORC format implementation (~35 source files)
+    Proto/                        Protobuf schema (orc_proto.proto)
+    Encoders/                     RLE v1/v2, boolean, dictionary encoders
+    Readers/                      Per-type column readers
+    Writers/                      Per-type column writers
+  EngineeredWood.Azure/           Azure Blob Storage backends
+    IO/Azure/                     AzureBlobRandomAccessFile, AzureBlobSequentialFile
+test/
+  EngineeredWood.Parquet.Tests/          xUnit tests for Parquet
+  EngineeredWood.Parquet.Benchmarks/     BenchmarkDotNet suites for Parquet
+  EngineeredWood.Parquet.Compatibility/  92-file cross-tool validation
+  EngineeredWood.Orc.Tests/              xUnit tests for ORC
+  EngineeredWood.Orc.Benchmarks/         BenchmarkDotNet suites for ORC
+parquet-testing/                         Git submodule with 100+ Parquet sample files
 ```
 
 ## Conventions
@@ -33,20 +45,15 @@ parquet-testing/                Git submodule with 100+ sample files
 
 ---
 
-## Layer 1 — I/O (`EngineeredWood.IO`)
+## Core library (`EngineeredWood.Core`)
 
-The I/O layer replaces `Stream` with two interfaces designed for Parquet's access patterns.
+Shared abstractions used by both Parquet and ORC.
 
-### Reading: `IRandomAccessFile`
+### I/O layer (`EngineeredWood.IO`)
 
-```
-IRandomAccessFile
-├── GetLengthAsync()
-├── ReadAsync(FileRange)
-└── ReadRangesAsync(IReadOnlyList<FileRange>)
-```
+Replaces `Stream` with two interfaces designed for columnar access patterns.
 
-No shared position cursor, so concurrent reads of disjoint ranges are safe. Implementations:
+**Reading: `IRandomAccessFile`** — No shared position cursor, so concurrent reads of disjoint ranges are safe.
 
 | Type | Notes |
 |---|---|
@@ -54,61 +61,51 @@ No shared position cursor, so concurrent reads of disjoint ranges are safe. Impl
 | `AzureBlobRandomAccessFile` | HTTP range requests; `SemaphoreSlim` throttle (default 16); delegates multi-range reads to `CoalescingFileReader` |
 | `CoalescingFileReader` | Decorator that merges nearby ranges (gap ≤ 64 KB, merged ≤ 16 MB) to reduce round trips, then slices results back to original order |
 
-### Writing: `ISequentialFile`
+**Writing: `ISequentialFile`** — Append-only: `WriteAsync(ReadOnlyMemory<byte>)` + `FlushAsync()` + `Position`. Implementations for local files (`LocalSequentialFile`) and Azure (`AzureBlobSequentialFile`).
 
-Append-only: `WriteAsync(ReadOnlyMemory<byte>)` + `FlushAsync()` + `Position`. Implementations for local files (`LocalSequentialFile`) and Azure (`AzureBlobSequentialFile`).
+**Buffer management** — `BufferAllocator` is an abstract factory for `IMemoryOwner<byte>`. The concrete `PooledBufferAllocator` wraps `ArrayPool<byte>.Shared` and slices rented arrays to exact size, reducing GC pressure.
 
-### Buffer management
+### Compression (`EngineeredWood.Compression`)
 
-`BufferAllocator` is an abstract factory for `IMemoryOwner<byte>`. The concrete `PooledBufferAllocator` wraps `ArrayPool<byte>.Shared` and slices rented arrays to exact size, reducing GC pressure.
+`Compressor` and `Decompressor` dispatch to codec-specific implementations:
+
+| Codec | Library | Notes |
+|---|---|---|
+| Uncompressed | — | Direct copy |
+| Snappy | Snappier | Pure managed, span-based |
+| Gzip | System.IO.Compression | `CompressionLevel.Fastest` for write |
+| Brotli | System.IO.Compression | Span-based `TryCompress` / `TryDecompress` |
+| Lz4 | K4os.Compression.LZ4 | Block codec, span-based |
+| Lz4Hadoop | K4os.Compression.LZ4 | Hadoop framing (big-endian length headers) with frame and raw fallback |
+| Zstd | ZstdSharp.Port | Pure managed; `[ThreadStatic]` compressor/decompressor for reuse |
+| Deflate | System.IO.Compression | Raw deflate (RFC 1951) |
+
+The shared `CompressionCodec` enum uses semantic names. Format-specific mapping functions translate between wire values and the enum (e.g., `MetadataDecoder.ParquetCodecFromThrift()`, ORC's `CompressionKind` protobuf enum).
+
+### Arrow helpers (`EngineeredWood.Arrow`)
+
+`NativeAllocator` provides 64-byte-aligned native memory via `NativeMemoryManager`. `NativeBuffer<T>` is a growable buffer backed by native memory that can be transferred to Arrow without copying.
 
 ---
 
-## Layer 2 — Thrift (`EngineeredWood.Parquet.Thrift`)
+## Parquet (`EngineeredWood.Parquet`)
+
+### Thrift codec (`Parquet.Thrift`)
 
 Parquet's footer and page headers are encoded in the Thrift Compact Protocol. EngineeredWood implements its own codec rather than depending on an external Thrift library.
 
-### `ThriftCompactReader`
+- **`ThriftCompactReader`** — `ref struct` over `ReadOnlySpan<byte>`. Reads varints (ULEB128), zigzag int32/int64, field headers with delta-encoded field IDs, binary, lists, and nested structs (inline 8-slot stack).
+- **`ThriftCompactWriter`** — Mirror encoder with a growable `byte[]` buffer. Reusable via `Reset()`.
 
-A `ref struct` over `ReadOnlySpan<byte>`. Methods: `ReadVarint()` (ULEB128), `ReadZigZagInt32/Int64()`, `ReadFieldHeader()` (delta-encoded field IDs), `ReadBinary()`, `ReadListHeader()`, `Skip()`. An inline stack (8 slots) tracks field ID context for nested structs. Boolean values are encoded in the type nibble of the field header (Compact Protocol optimization).
+### Metadata (`Parquet.Metadata`)
 
-### `ThriftCompactWriter`
+Immutable record types mirroring the Parquet Thrift spec: `FileMetaData`, `RowGroup`, `ColumnChunk`→`ColumnMetaData`, `SchemaElement`, `LogicalType`. `MetadataDecoder`/`MetadataEncoder` convert between the model and Thrift bytes.
 
-Mirror encoder with a growable `byte[]` buffer. Reusable via `Reset()`. Supports the same field-ID delta encoding and boolean-in-nibble compaction.
+### Schema (`Parquet.Schema`)
 
----
+`SchemaDescriptor` converts the flat `SchemaElement` list into a `SchemaNode` tree, then collects leaf columns into `ColumnDescriptor` objects with computed definition and repetition levels.
 
-## Layer 3 — Metadata (`EngineeredWood.Parquet.Metadata`)
-
-### Model
-
-Immutable record types mirroring the Parquet Thrift spec:
-
-- `FileMetaData` — version, schema elements, num_rows, row groups, key-value metadata, created_by
-- `RowGroup` — list of `ColumnChunk`, total byte size, num_rows
-- `ColumnChunk` → `ColumnMetaData` — physical type, encodings, codec, offsets, statistics
-- `SchemaElement` — one node of the flat pre-order schema
-- `LogicalType` — sealed record hierarchy (`StringType`, `DecimalType(Scale, Precision)`, `TimestampType(IsAdjustedToUtc, TimeUnit)`, etc.)
-
-### `MetadataDecoder` / `MetadataEncoder`
-
-Static methods that convert between the model and Thrift-encoded bytes. Parameterless `LogicalType` variants are cached as singletons.
-
----
-
-## Layer 4 — Schema (`EngineeredWood.Parquet.Schema`)
-
-`SchemaDescriptor` converts the flat `SchemaElement` list from the footer into a tree of `SchemaNode` objects, then collects leaf columns into `ColumnDescriptor` objects with computed definition and repetition levels.
-
-- **Definition level** increments for each `OPTIONAL` ancestor.
-- **Repetition level** increments for each `REPEATED` ancestor.
-- `ColumnDescriptor` carries the full path, physical type, type length, max def/rep levels, and a pointer back to the `SchemaNode`.
-
----
-
-## Layer 5 — Data: Reading (`EngineeredWood.Parquet.Data`)
-
-### Read pipeline overview
+### Read pipeline
 
 ```
 ParquetFileReader.ReadRowGroupAsync()
@@ -124,7 +121,7 @@ ParquetFileReader.ReadRowGroupAsync()
        └─ NestedAssembler            (if nested columns) flat leaves → Struct/List/Map arrays
 ```
 
-### Encodings (read)
+**Encodings:**
 
 | Encoding | Decoder | Notes |
 |---|---|---|
@@ -137,21 +134,11 @@ ParquetFileReader.ReadRowGroupAsync()
 | DELTA_BYTE_ARRAY | `DeltaByteArrayDecoder` | Delta-encoded prefix lengths + suffix lengths + suffix data |
 | BYTE_STREAM_SPLIT | `ByteStreamSplitDecoder` | AVX2 SIMD with scalar fallback; interleaved byte streams for float/double |
 
-### Arrow array construction
+**Arrow array construction** — `ArrowArrayBuilder` dispatches by Arrow type. For nullable flat columns, it scatters non-null values right-to-left in-place to open gaps for nulls, avoiding a temporary buffer. Validity bitmaps are built from definition levels with SIMD (`Vector256`/`Vector128`) when available.
 
-`ArrowArrayBuilder` dispatches by Arrow type. For nullable flat columns, it scatters non-null values right-to-left in-place to open gaps for nulls, avoiding a temporary buffer. Validity bitmaps are built from definition levels with SIMD (`Vector256`/`Vector128`) when available.
+**Nested types** — `NestedAssembler` reconstructs Arrow `StructArray`, `ListArray`, and `MapArray` from flat leaf columns plus their def/rep level arrays. Phantom entries (null/empty list markers) are filtered before recursing into inner element assembly.
 
-`ColumnBuildState` manages pooled and native buffers during page accumulation, supporting three BYTE_ARRAY output modes: default (32-bit offsets), view type (16-byte inline entries), and large offsets (64-bit).
-
-### Nested types
-
-`NestedAssembler` reconstructs Arrow `StructArray`, `ListArray`, and `MapArray` from flat leaf columns plus their def/rep level arrays.
-
-- **Struct:** Child arrays grouped; validity bitmap derived from def levels at the struct's depth.
-- **List/Map:** `BuildOffsetsAndBitmap()` uses rep/def level thresholds to determine list boundaries and null/empty markers. Phantom entries (null or empty list markers in the level arrays) are filtered before recursing into inner element assembly.
-- **Deeply nested** (list-of-list, map-of-map, etc.): Recursive assembly with phantom filtering at each nesting depth.
-
-### `ParquetFileReader` concurrency strategies
+**Concurrency strategies:**
 
 | Method | I/O | Decode |
 |---|---|---|
@@ -160,18 +147,7 @@ ParquetFileReader.ReadRowGroupAsync()
 | `ReadRowGroupIncrementalParallelAsync` | Parallel with bounded concurrency | `Parallel.For` |
 | `ReadAllAsync` | Streams row groups as `IAsyncEnumerable<RecordBatch>` | Per-group strategy above |
 
-### Read options
-
-`ParquetReadOptions` controls Arrow type mapping for BYTE_ARRAY columns:
-- `Default` — `StringType` / `BinaryType` (32-bit offsets)
-- `ViewType` — `StringViewType` / `BinaryViewType` (inline ≤ 12 bytes)
-- `LargeOffsets` — 64-bit offsets (removes 2 GB column limit)
-
----
-
-## Layer 5 — Data: Writing (`EngineeredWood.Parquet.Data`)
-
-### Write pipeline overview
+### Write pipeline
 
 ```
 ParquetFileWriter.WriteRowGroupAsync(RecordBatch)
@@ -191,9 +167,7 @@ ParquetFileWriter.WriteRowGroupAsync(RecordBatch)
   └─ CloseAsync() → MetadataEncoder → footer + footer length + trailing PAR1
 ```
 
-### Encoding strategy
-
-`EncodingStrategyResolver` selects the encoding per column based on physical type and page version:
+**Encoding strategy** — `EncodingStrategyResolver` selects the encoding per column:
 
 | Physical type | V2 encoding | V1 encoding |
 |---|---|---|
@@ -205,69 +179,82 @@ ParquetFileWriter.WriteRowGroupAsync(RecordBatch)
 
 Dictionary encoding is attempted first (unless disabled or Boolean). Cardinality threshold: 20% of non-null values. The `DictionaryEncoder` uses an open-addressing hash table with FNV-1a hashing for ByteArray/FLBA to avoid GC pressure from collision chains.
 
-### Page format
-
-- **V2 (default):** Def/rep levels are RLE-encoded and stored uncompressed; only the values section is compressed. This yields better compressibility and is required by some tools for nested columns.
-- **V1 (legacy):** Levels + values are concatenated with 4-byte length prefixes, then the entire body is compressed together.
-
-### Statistics
-
-`StatisticsCollector` computes `min`, `max`, and `null_count` per column chunk. When dictionary encoding is used, statistics are computed from the dictionary entries alone (O(unique) instead of O(total)). Binary min/max are truncated to 64 bytes to prevent metadata bloat. NaN and negative-zero are handled correctly for floats.
-
-### Write options
-
-`ParquetWriteOptions` controls:
-- `Compression` — default Snappy; per-column overrides via `ColumnCodecs`
-- `DataPageVersion` — V1 or V2 (default V2)
-- `DataPageSize` — target uncompressed page size (default 1 MB)
-- `DictionaryPageSizeLimit` — abandon dictionary if it exceeds this (default 1 MB)
-- `DictionaryEnabled` — analyze-before-write dictionary strategy (default true)
-- `RowGroupMaxRows` / `RowGroupMaxBytes` — auto-splitting thresholds
-- `ByteArrayEncoding` — DELTA_LENGTH_BYTE_ARRAY (default) or DELTA_BYTE_ARRAY; per-column overrides via `ColumnEncodings`
-- `KeyValueMetadata` — arbitrary key-value pairs in the footer
-- `CreatedBy` — application identifier
+**Write options** — `ParquetWriteOptions` controls compression (per-column overrides), page version, page size, dictionary limits, row group splitting, byte array encoding strategy, key-value metadata, and application identifier.
 
 ---
 
-## Compression (`EngineeredWood.Parquet.Compression`)
+## ORC (`EngineeredWood.Orc`)
 
-`Compressor` and `Decompressor` dispatch to codec-specific implementations:
+### Metadata
 
-| Codec | Library | Notes |
+ORC metadata (postscript, footer, stripe information) is serialized with Protobuf. The `.proto` file is compiled by Grpc.Tools at build time into `EngineeredWood.Orc.Proto`.
+
+### Schema (`OrcSchema`)
+
+`OrcSchema` builds a schema tree from the ORC footer's type list and converts between ORC types and Arrow types via `ToArrowType()`.
+
+### Read pipeline
+
+```
+OrcReader (open file, parse postscript/footer/schema)
+  └─ CreateRowReader() → OrcRowReader (async iterator)
+      └─ ReadStripeSelectiveAsync / ReadStripeFullAsync
+          └─ CreateColumnReaders (one per ORC type)
+              └─ ColumnReader.ReadBatch(size) → IArrowArray
+```
+
+Each column type has a dedicated reader class. Column data is stored in named streams (PRESENT, DATA, SECONDARY, LENGTH, DICTIONARY_DATA) which are decoded via RLE v1/v2 decoders. The PRESENT stream carries null bitmaps as boolean RLE.
+
+**Selective I/O** — When column projection is active, only the streams for requested columns are read. Nearby streams are coalesced (1 MB gap threshold) to reduce I/O round trips.
+
+**Compression** — ORC uses blockwise compression with 3-byte headers (original-length, compressed/uncompressed flag). `OrcCompression.DecompressBlock()` handles the block format.
+
+### Write pipeline
+
+```
+OrcWriter (init with Arrow schema, create column writers)
+  └─ WriteBatchAsync (buffer rows, check stripe size)
+      └─ ColumnWriter.Write(array) (encode data, track stats)
+  └─ FlushStripeAsync (when stripe full or closing)
+      └─ Collect streams (PRESENT + data streams per column)
+      └─ Write row index (positions, per-row-group stats)
+      └─ Write stripe footer, compress if needed
+  └─ CloseAsync → WriteFileTailAsync (metadata, footer, postscript)
+```
+
+**Stripe management** — Auto-flush at configurable size (default 64 MB). Row indexing at configurable stride (default 10K rows) with byte-offset tracking for skip-scan.
+
+**Encoding defaults** — RLE v2 for integers, Dictionary v2 for strings (fallback to Direct v2 above 40K unique values).
+
+### ORC types
+
+All 19 ORC types are supported for both reading and writing:
+
+| Category | ORC Types | Arrow Mapping |
 |---|---|---|
-| Uncompressed | — | Direct copy |
-| Snappy | Snappier | Pure managed, span-based |
-| Gzip | System.IO.Compression | `CompressionLevel.Fastest` for write |
-| Brotli | System.IO.Compression | Span-based `TryCompress` / `TryDecompress` |
-| LZ4_RAW | K4os.Compression.LZ4 | Block codec, span-based |
-| LZ4 (legacy) | K4os.Compression.LZ4 | Hadoop framing (big-endian length headers) with frame and raw fallback |
-| Zstd | ZstdSharp.Port | Pure managed; `[ThreadStatic]` compressor/decompressor for reuse |
-
-LZO is not supported.
+| Integer | Boolean, Byte, Short, Int, Long | BooleanArray, Int8-64Array |
+| Float | Float, Double | FloatArray, DoubleArray |
+| String | String, Varchar, Char | StringArray |
+| Binary | Binary | BinaryArray |
+| Temporal | Date, Timestamp, TimestampInstant | Date32Array, TimestampArray |
+| Decimal | Decimal | Decimal128Array |
+| Complex | Struct, List, Map, Union | StructArray, ListArray, etc. |
 
 ---
 
-## Nested column handling
+## Arrow ↔ format type mapping
 
-### Read path (`NestedAssembler`)
-
-After all leaf columns are decoded, `NestedAssembler.Assemble()` walks the schema tree and reconstructs Arrow nested arrays. List and map offsets are derived from repetition levels; validity bitmaps from definition levels at each nesting depth. Phantom entries (level markers for null or empty containers) are filtered from element arrays before recursing into inner structure.
-
-### Write path (`NestedLevelWriter`)
-
-`NestedLevelWriter.Decompose()` walks an Arrow nested array and produces flat `LeafColumn` results — each containing the dense non-null value array plus def/rep level arrays. Struct children inherit parent nullability; list/map elements get incremented rep levels.
-
----
-
-## Arrow ↔ Parquet type mapping
-
-### Read direction (`ArrowSchemaConverter`)
+### Parquet — read direction (`ArrowSchemaConverter`)
 
 Three-stage fallthrough: LogicalType → ConvertedType → PhysicalType. Handles decimal precision routing (INT32→Decimal32, INT64→Decimal64, FLBA→Decimal128/256), timestamp units, and the three BYTE_ARRAY output modes.
 
-### Write direction (`ArrowToSchemaConverter`)
+### Parquet — write direction (`ArrowToSchemaConverter`)
 
 Converts Arrow `Schema` fields into a flat list of `SchemaElement` in pre-order traversal. Nested types (struct, list, map) produce the standard Parquet group annotations with correct `NumChildren` and repetition types.
+
+### ORC — bidirectional (`OrcSchema`)
+
+`ToArrowType()` maps ORC types to Arrow; the writer's `AddType()` maps Arrow schema fields back to the ORC type tree.
 
 ---
 
@@ -293,11 +280,9 @@ Pattern match ordering matters: `Decimal32/64/128/256Type` all inherit from `Fix
 
 ## Test infrastructure
 
-- `TestData.cs` locates the `parquet-testing/data/` submodule by walking up from `AppContext.BaseDirectory`.
-- Sweep tests iterate all sample files, skip encrypted/malformed, collect failures, assert none.
-- Cross-validation: a companion `EngineeredWood.Compatibility` project downloads 92 files from fastparquet, parquet-dotnet, parquet-tools, and HuggingFace and validates all row groups.
-- Decoder/encoder tests use both unit-level checks (known byte sequences) and round-trip verification against ParquetSharp.
+- **Parquet:** `TestData.cs` locates the `parquet-testing/data/` submodule by walking up from `AppContext.BaseDirectory`. Sweep tests iterate all sample files, skip encrypted/malformed, collect failures, assert none. The `EngineeredWood.Parquet.Compatibility` project downloads 92 files from fastparquet, parquet-dotnet, parquet-tools, and HuggingFace and validates all row groups. Decoder/encoder tests use both unit-level checks and round-trip verification against ParquetSharp.
+- **ORC:** Test data files (.orc) are included directly in the test project. `CrossValidationTests` validates round-trip correctness against PyArrow's ORC implementation when available.
 
 ## Benchmarks
 
-`EngineeredWood.Benchmarks` contains BenchmarkDotNet suites comparing against ParquetSharp and Parquet.Net for metadata parsing, row group reads, row group writes, and individual encodings.
+`EngineeredWood.Parquet.Benchmarks` and `EngineeredWood.Orc.Benchmarks` contain BenchmarkDotNet suites for metadata parsing, row group reads, row group writes, and individual encodings.

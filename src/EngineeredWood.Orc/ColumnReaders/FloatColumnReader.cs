@@ -1,0 +1,66 @@
+using EngineeredWood.Arrow;
+using System.Runtime.InteropServices;
+using Apache.Arrow;
+using EngineeredWood.Orc.Encodings;
+
+namespace EngineeredWood.Orc.ColumnReaders;
+
+internal sealed class FloatColumnReader : ColumnReader
+{
+    private OrcByteStream? _dataStream;
+
+    public FloatColumnReader(int columnId) : base(columnId) { }
+
+    public void SetDataStream(OrcByteStream stream) => _dataStream = stream;
+
+    public override IArrowArray ReadBatch(int batchSize)
+    {
+        var present = ReadPresent(batchSize);
+        int nonNullCount = CountNonNull(present, batchSize);
+        int nullCount = present == null ? 0 : batchSize - nonNullCount;
+
+        using var buf = new NativeBuffer<float>(batchSize, zeroFill: nullCount > 0);
+        if (_dataStream != null)
+        {
+            var values = buf.Span;
+            for (int i = 0; i < batchSize; i++)
+            {
+                if (present == null || present[i])
+                    values[i] = BitConverter.ToSingle(_dataStream.ReadSpan(4));
+            }
+        }
+
+        var nullBuffer = CreateValidityBuffer(present, batchSize);
+        return new FloatArray(buf.Build(), nullBuffer, batchSize, nullCount, 0);
+    }
+}
+
+internal sealed class DoubleColumnReader : ColumnReader
+{
+    private OrcByteStream? _dataStream;
+
+    public DoubleColumnReader(int columnId) : base(columnId) { }
+
+    public void SetDataStream(OrcByteStream stream) => _dataStream = stream;
+
+    public override IArrowArray ReadBatch(int batchSize)
+    {
+        var present = ReadPresent(batchSize);
+        int nonNullCount = CountNonNull(present, batchSize);
+        int nullCount = present == null ? 0 : batchSize - nonNullCount;
+
+        using var buf = new NativeBuffer<double>(batchSize, zeroFill: nullCount > 0);
+        if (_dataStream != null)
+        {
+            var values = buf.Span;
+            for (int i = 0; i < batchSize; i++)
+            {
+                if (present == null || present[i])
+                    values[i] = BitConverter.ToDouble(_dataStream.ReadSpan(8));
+            }
+        }
+
+        var nullBuffer = CreateValidityBuffer(present, batchSize);
+        return new DoubleArray(buf.Build(), nullBuffer, batchSize, nullCount, 0);
+    }
+}

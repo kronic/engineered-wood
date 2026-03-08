@@ -1,6 +1,15 @@
 <Solution>
-  <Project Path="EngineeredWood.Benchmarks/EngineeredWood.Benchmarks.csproj" />
-  <Project Path="EngineeredWood.Compatibility/EngineeredWood.Compatibility.csproj" />
-  <Project Path="EngineeredWood.Tests/EngineeredWood.Tests.csproj" />
-  <Project Path="EngineeredWood/EngineeredWood.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/EngineeredWood.Core/EngineeredWood.Core.csproj" />
+    <Project Path="src/EngineeredWood.Azure/EngineeredWood.Azure.csproj" />
+    <Project Path="src/EngineeredWood.Parquet/EngineeredWood.Parquet.csproj" />
+    <Project Path="src/EngineeredWood.Orc/EngineeredWood.Orc.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/EngineeredWood.Parquet.Tests/EngineeredWood.Parquet.Tests.csproj" />
+    <Project Path="test/EngineeredWood.Parquet.Benchmarks/EngineeredWood.Parquet.Benchmarks.csproj" />
+    <Project Path="test/EngineeredWood.Parquet.Compatibility/EngineeredWood.Parquet.Compatibility.csproj" />
+    <Project Path="test/EngineeredWood.Orc.Tests/EngineeredWood.Orc.Tests.csproj" />
+    <Project Path="test/EngineeredWood.Orc.Benchmarks/EngineeredWood.Orc.Benchmarks.csproj" />
+  </Folder>
 </Solution>

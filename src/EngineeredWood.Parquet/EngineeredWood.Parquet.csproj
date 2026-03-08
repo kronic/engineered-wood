@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EngineeredWood.Core\EngineeredWood.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EngineeredWood.Parquet.Tests" />
+    <InternalsVisibleTo Include="EngineeredWood.Parquet.Benchmarks" />
+    <InternalsVisibleTo Include="EngineeredWood.Tests" />
+    <InternalsVisibleTo Include="EngineeredWood.Benchmarks" />
+  </ItemGroup>
+
+</Project>

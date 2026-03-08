@@ -1,0 +1,57 @@
+namespace EngineeredWood.Orc.Encodings;
+
+/// <summary>
+/// Writes bits and packed integers to a byte stream. Big-endian bit order (MSB first).
+/// </summary>
+internal sealed class BitWriter
+{
+    private readonly Stream _stream;
+    private int _currentByte;
+    private int _bitsUsed;
+
+    public BitWriter(Stream stream)
+    {
+        _stream = stream;
+    }
+
+    public void WriteBits(long value, int numBits)
+    {
+        if (numBits == 0) return;
+
+        int remaining = numBits;
+        while (remaining > 0)
+        {
+            int bitsToWrite = Math.Min(remaining, 8 - _bitsUsed);
+            int shift = remaining - bitsToWrite;
+            int bits = (int)((value >> shift) & ((1 << bitsToWrite) - 1));
+            _currentByte |= bits << (8 - _bitsUsed - bitsToWrite);
+            _bitsUsed += bitsToWrite;
+            remaining -= bitsToWrite;
+
+            if (_bitsUsed == 8)
+                FlushByte();
+        }
+    }
+
+    public void WritePackedInts(ReadOnlySpan<long> values, int bitWidth)
+    {
+        for (int i = 0; i < values.Length; i++)
+            WriteBits(values[i], bitWidth);
+    }
+
+    /// <summary>
+    /// Flushes any partial byte, padding with zeros on the right.
+    /// </summary>
+    public void Flush()
+    {
+        if (_bitsUsed > 0)
+            FlushByte();
+    }
+
+    private void FlushByte()
+    {
+        _stream.WriteByte((byte)_currentByte);
+        _currentByte = 0;
+        _bitsUsed = 0;
+    }
+}

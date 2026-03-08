@@ -1,0 +1,175 @@
+using Apache.Arrow;
+using EngineeredWood.Orc.Proto;
+using ProtoStream = EngineeredWood.Orc.Proto.Stream;
+
+namespace EngineeredWood.Orc.ColumnWriters;
+
+internal sealed class FloatColumnWriter : ColumnWriter
+{
+    private readonly MemoryStream _dataStream = new();
+    private double _min = double.PositiveInfinity;
+    private double _max = double.NegativeInfinity;
+    private double _sum;
+    private bool _hasValues;
+
+    public FloatColumnWriter(int columnId) : base(columnId) { }
+
+    public override void Write(IArrowArray array)
+    {
+        WritePresent(array);
+        var a = (FloatArray)array;
+        Span<byte> tmp = stackalloc byte[4];
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (!a.IsValid(i)) continue;
+            float v = a.GetValue(i)!.Value;
+            _hasValues = true;
+            if (v < _min) _min = v;
+            if (v > _max) _max = v;
+            _sum += v;
+            BitConverter.TryWriteBytes(tmp, v);
+            _dataStream.Write(tmp);
+        }
+    }
+
+    public override ColumnStatistics GetStatistics()
+    {
+        var stats = base.GetStatistics();
+        if (_hasValues)
+        {
+            stats.DoubleStatistics = new DoubleStatistics
+            {
+                Minimum = _min,
+                Maximum = _max,
+                Sum = _sum,
+            };
+        }
+        return stats;
+    }
+
+    public override long EstimateBufferedBytes() => base.EstimateBufferedBytes() + _dataStream.Length;
+
+    public override ColumnEncoding GetEncoding() => new() { Kind = ColumnEncoding.Types.Kind.Direct };
+
+    public override void GetStreamPositions(IList<ulong> positions)
+    {
+        base.GetStreamPositions(positions);
+        positions.Add((ulong)_dataStream.Length);
+    }
+
+    public override void GetPositionLayout(IList<int> extrasPerStream)
+    {
+        base.GetPositionLayout(extrasPerStream);
+        extrasPerStream.Add(0); // DATA (raw): no extras
+    }
+
+    public override void ResetStatistics()
+    {
+        base.ResetStatistics();
+        _min = double.PositiveInfinity;
+        _max = double.NegativeInfinity;
+        _sum = 0;
+        _hasValues = false;
+    }
+
+    public override void GetStreams(List<OrcStream> streams)
+    {
+        base.GetStreams(streams);
+        streams.Add(new OrcStream(ColumnId, ProtoStream.Types.Kind.Data, _dataStream));
+    }
+
+    public override void Reset()
+    {
+        base.Reset();
+        _dataStream.SetLength(0);
+        _min = double.PositiveInfinity;
+        _max = double.NegativeInfinity;
+        _sum = 0;
+        _hasValues = false;
+    }
+}
+
+internal sealed class DoubleColumnWriter : ColumnWriter
+{
+    private readonly MemoryStream _dataStream = new();
+    private double _min = double.PositiveInfinity;
+    private double _max = double.NegativeInfinity;
+    private double _sum;
+    private bool _hasValues;
+
+    public DoubleColumnWriter(int columnId) : base(columnId) { }
+
+    public override void Write(IArrowArray array)
+    {
+        WritePresent(array);
+        var a = (DoubleArray)array;
+        Span<byte> tmp = stackalloc byte[8];
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (!a.IsValid(i)) continue;
+            double v = a.GetValue(i)!.Value;
+            _hasValues = true;
+            if (v < _min) _min = v;
+            if (v > _max) _max = v;
+            _sum += v;
+            BitConverter.TryWriteBytes(tmp, v);
+            _dataStream.Write(tmp);
+        }
+    }
+
+    public override ColumnStatistics GetStatistics()
+    {
+        var stats = base.GetStatistics();
+        if (_hasValues)
+        {
+            stats.DoubleStatistics = new DoubleStatistics
+            {
+                Minimum = _min,
+                Maximum = _max,
+                Sum = _sum,
+            };
+        }
+        return stats;
+    }
+
+    public override long EstimateBufferedBytes() => base.EstimateBufferedBytes() + _dataStream.Length;
+
+    public override ColumnEncoding GetEncoding() => new() { Kind = ColumnEncoding.Types.Kind.Direct };
+
+    public override void GetStreamPositions(IList<ulong> positions)
+    {
+        base.GetStreamPositions(positions);
+        positions.Add((ulong)_dataStream.Length);
+    }
+
+    public override void GetPositionLayout(IList<int> extrasPerStream)
+    {
+        base.GetPositionLayout(extrasPerStream);
+        extrasPerStream.Add(0); // DATA (raw): no extras
+    }
+
+    public override void ResetStatistics()
+    {
+        base.ResetStatistics();
+        _min = double.PositiveInfinity;
+        _max = double.NegativeInfinity;
+        _sum = 0;
+        _hasValues = false;
+    }
+
+    public override void GetStreams(List<OrcStream> streams)
+    {
+        base.GetStreams(streams);
+        streams.Add(new OrcStream(ColumnId, ProtoStream.Types.Kind.Data, _dataStream));
+    }
+
+    public override void Reset()
+    {
+        base.Reset();
+        _dataStream.SetLength(0);
+        _min = double.PositiveInfinity;
+        _max = double.NegativeInfinity;
+        _sum = 0;
+        _hasValues = false;
+    }
+}

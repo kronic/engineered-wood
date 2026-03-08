@@ -1,10 +1,10 @@
 # EngineeredWood
 
-A .NET library for reading and writing Apache Parquet files as Apache Arrow `RecordBatch` objects, optimized for cloud storage.
+A .NET library for reading and writing columnar file formats — **Apache Parquet** and **Apache ORC** — as Apache Arrow `RecordBatch` objects, optimized for cloud storage.
 
 ## What
 
-EngineeredWood is a fast, modern Parquet implementation for .NET that treats cloud storage as a first-class target rather than an afterthought. The traditional `Stream` abstraction — with its single position cursor — is a poor fit for Parquet's columnar layout, where a reader needs to fetch many disjoint byte ranges concurrently. Every "seek + read" on cloud storage becomes a separate HTTP request with significant latency.
+EngineeredWood is a fast, modern implementation of columnar file formats for .NET that treats cloud storage as a first-class target rather than an afterthought. The traditional `Stream` abstraction — with its single position cursor — is a poor fit for columnar layouts, where a reader needs to fetch many disjoint byte ranges concurrently. Every "seek + read" on cloud storage becomes a separate HTTP request with significant latency.
 
 This library replaces `Stream` with an offset-based I/O layer that supports:
 
@@ -17,15 +17,31 @@ This library replaces `Stream` with an offset-based I/O layer that supports:
 
 There are two motivations for this project, and they're equally important:
 
-**1. A better Parquet library for .NET.** Existing .NET Parquet libraries were not designed around the access patterns that matter for cloud-native analytics — batched range reads, concurrent column chunk fetches, and zero-copy buffer management. EngineeredWood is built from the ground up with these patterns in mind, drawing inspiration from [arrow-rs](https://github.com/apache/arrow-rs).
+**1. Better columnar file format libraries for .NET.** Existing .NET Parquet and ORC libraries were not designed around the access patterns that matter for cloud-native analytics — batched range reads, concurrent column chunk fetches, and zero-copy buffer management. EngineeredWood is built from the ground up with these patterns in mind, drawing inspiration from [arrow-rs](https://github.com/apache/arrow-rs).
 
 **2. An experiment in agentic coding.** This project is being built collaboratively with an AI coding agent (Claude Code). Every file, test, and design decision has been produced through human-AI pair programming. It's a real-world test of how far agentic coding can go on a nontrivial systems library — not a toy demo, but a genuine attempt to build something useful while exploring a new way of writing software.
 
-## Features
+## Project structure
+
+```
+src/
+  EngineeredWood.Core/          Shared abstractions: I/O, compression, Arrow helpers
+  EngineeredWood.Parquet/       Parquet reader and writer
+  EngineeredWood.Orc/           ORC reader and writer
+  EngineeredWood.Azure/         Azure Blob Storage backends
+test/
+  EngineeredWood.Parquet.Tests/         xUnit tests for Parquet
+  EngineeredWood.Parquet.Benchmarks/    BenchmarkDotNet suites for Parquet
+  EngineeredWood.Parquet.Compatibility/ 92-file cross-tool validation
+  EngineeredWood.Orc.Tests/             xUnit tests for ORC
+  EngineeredWood.Orc.Benchmarks/        BenchmarkDotNet suites for ORC
+```
+
+## Features — Parquet
 
 ### Reading
 
-- Full Parquet footer and metadata parsing (custom Thrift Compact Protocol codec)
+- Full footer and metadata parsing (custom Thrift Compact Protocol codec)
 - Parallel column I/O with configurable concurrency strategies
 - Column projection by name (including dotted paths for nested columns)
 - Streaming via `IAsyncEnumerable<RecordBatch>` (`ReadAllAsync`)
@@ -61,16 +77,56 @@ There are two motivations for this project, and they're equally important:
 | RLE (levels) | yes | yes |
 | BIT_PACKED (deprecated, levels) | yes | — |
 
+## Features — ORC
+
+### Reading
+
+- Full ORC file parsing (postscript, footer, stripe metadata via Protobuf)
+- Selective column I/O with stream coalescing
+- Column projection by name
+- Row indexing support (10K row stride)
+- Streaming via `IAsyncEnumerable<RecordBatch>`
+
+### Writing
+
+- Arrow `RecordBatch` → ORC with auto stripe management (64 MB default)
+- RLE v2 encoding for integers, Dictionary v2 for strings
+- Configurable string dictionary threshold (40K unique values default)
+- Row index generation (10K row stride, configurable)
+- Per-stripe and file-level column statistics
+
+### Types
+
+All 19 ORC types are supported for both reading and writing:
+- **Integer**: Boolean, Byte, Short, Int, Long
+- **Floating point**: Float, Double
+- **String/Binary**: String, Varchar, Char, Binary
+- **Temporal**: Date, Timestamp, TimestampInstant (UTC)
+- **Decimal**: Decimal128 (configurable precision/scale)
+- **Complex**: Struct, List, Map, Union
+
+### Encodings
+
+| Encoding | Read | Write |
+|---|---|---|
+| DIRECT | yes | yes |
+| DIRECT_V2 (RLE v2) | yes | yes |
+| DICTIONARY | yes | — |
+| DICTIONARY_V2 | yes | yes |
+
+## Shared infrastructure
+
 ### Compression
 
-| Codec | Library |
-|---|---|
-| Snappy (default) | [Snappier](https://github.com/brantburnett/Snappier) — pure managed |
-| Zstd | [ZstdSharp](https://github.com/oleg-st/ZstdSharp) — pure managed |
-| LZ4 / LZ4_RAW | [K4os.Compression.LZ4](https://github.com/MiloszKrajewski/K4os.Compression.LZ4) |
-| Gzip | System.IO.Compression |
-| Brotli | System.IO.Compression |
-| Uncompressed | — |
+| Codec | Library | Parquet | ORC |
+|---|---|---|---|
+| Snappy | [Snappier](https://github.com/brantburnett/Snappier) — pure managed | yes (default) | yes |
+| Zstd | [ZstdSharp](https://github.com/oleg-st/ZstdSharp) — pure managed | yes | yes (default) |
+| LZ4 / LZ4_RAW | [K4os.Compression.LZ4](https://github.com/MiloszKrajewski/K4os.Compression.LZ4) | yes | yes |
+| Gzip / Zlib | System.IO.Compression | yes | yes |
+| Brotli | System.IO.Compression | yes | — |
+| Deflate | System.IO.Compression | — | yes |
+| Uncompressed | — | yes | yes |
 
 ### I/O backends
 
@@ -83,7 +139,7 @@ There are two motivations for this project, and they're equally important:
 
 ## Usage
 
-### Reading
+### Parquet — Reading
 
 ```csharp
 await using var file = new LocalRandomAccessFile("data.parquet");
@@ -99,7 +155,7 @@ await foreach (var batch in reader.ReadAllAsync())
 var batch = await reader.ReadRowGroupAsync(0, columnNames: ["id", "name"]);
 ```
 
-### Writing
+### Parquet — Writing
 
 ```csharp
 await using var file = new LocalSequentialFile("output.parquet");
@@ -110,6 +166,30 @@ await using var writer = new ParquetFileWriter(file, options: new ParquetWriteOp
 });
 
 await writer.WriteRowGroupAsync(recordBatch);
+await writer.CloseAsync();
+```
+
+### ORC — Reading
+
+```csharp
+await using var reader = await OrcReader.OpenAsync("data.orc");
+
+var rowReader = reader.CreateRowReader();
+await foreach (var batch in rowReader)
+{
+    // batch is an Apache.Arrow.RecordBatch
+}
+```
+
+### ORC — Writing
+
+```csharp
+await using var writer = OrcWriter.Create("output.orc", arrowSchema, new OrcWriterOptions
+{
+    Compression = CompressionKind.Zstd,
+});
+
+await writer.WriteBatchAsync(recordBatch);
 await writer.CloseAsync();
 ```
 
