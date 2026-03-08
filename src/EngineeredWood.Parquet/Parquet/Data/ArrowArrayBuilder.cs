@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Memory;
@@ -328,46 +327,11 @@ internal static class ArrowArrayBuilder
     /// Builds a validity bitmap from byte definition levels using SIMD where available.
     /// Bit i is set if defLevels[i] == maxDefLevel.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void BuildBitmapFromDefLevels(
         ReadOnlySpan<byte> defLevels, Span<byte> bitmap, int count, byte maxDefLevel)
     {
-        ref byte defRef = ref MemoryMarshal.GetReference(defLevels);
-        int i = 0;
-
-        if (Vector256.IsHardwareAccelerated && count >= 32)
-        {
-            var maxVec = Vector256.Create(maxDefLevel);
-            int vectorEnd = count - 31;
-            for (; i < vectorEnd; i += 32)
-            {
-                var levels = Vector256.LoadUnsafe(ref defRef, (nuint)i);
-                uint mask = Vector256.Equals(levels, maxVec).ExtractMostSignificantBits();
-                ref byte bitmapRef = ref bitmap[i >> 3];
-                Unsafe.WriteUnaligned(ref bitmapRef, mask);
-            }
-        }
-        else if (Vector128.IsHardwareAccelerated && count >= 16)
-        {
-            var maxVec = Vector128.Create(maxDefLevel);
-            int vectorEnd = count - 15;
-            for (; i < vectorEnd; i += 16)
-            {
-                var levels = Vector128.LoadUnsafe(ref defRef, (nuint)i);
-                uint mask = Vector128.Equals(levels, maxVec).ExtractMostSignificantBits();
-                ref byte bitmapRef = ref bitmap[i >> 3];
-                Unsafe.WriteUnaligned(ref bitmapRef, (ushort)mask);
-            }
-        }
-
-        // Scalar tail: clear remaining bitmap bytes first since |= requires zero-init
-        int tailBitmapStart = i >> 3;
-        int totalBitmapBytes = (count + 7) / 8;
-        bitmap.Slice(tailBitmapStart, totalBitmapBytes - tailBitmapStart).Clear();
-        for (; i < count; i++)
-        {
-            if (defLevels[i] == maxDefLevel)
-                bitmap[i >> 3] |= (byte)(1 << (i & 7));
-        }
+        BitmapHelper.BuildFromEquality(defLevels, bitmap, count, maxDefLevel);
     }
 
     private static IArrowArray BuildFixedArray<T>(ColumnBuildState state, IArrowType arrowType, int rowCount)

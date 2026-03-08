@@ -59,19 +59,15 @@ internal abstract class ColumnReader
 
     /// <summary>
     /// Creates an Arrow validity (null) bitmap buffer from the present array.
+    /// Uses SIMD where hardware-accelerated.
     /// </summary>
     protected static ArrowBuffer CreateValidityBuffer(bool[]? present, int length)
     {
         if (present == null) return ArrowBuffer.Empty;
 
         int byteCount = (length + 7) / 8;
-        using var buf = new NativeBuffer<byte>(byteCount, zeroFill: true);
-        var bytes = buf.Span;
-        for (int i = 0; i < length; i++)
-        {
-            if (present[i])
-                bytes[i >> 3] |= (byte)(1 << (i & 7));
-        }
+        using var buf = new NativeBuffer<byte>(byteCount, zeroFill: false);
+        BitmapHelper.BuildFromBooleans(present.AsSpan(0, length), buf.Span, length);
         return buf.Build();
     }
 
