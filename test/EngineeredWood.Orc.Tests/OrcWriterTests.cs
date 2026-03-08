@@ -3603,12 +3603,12 @@ public class OrcWriterTests
     public void RleV2_ExtremeValues_RoundTrip()
     {
         var original = new long[] { long.MinValue, long.MaxValue, 0, -1, 1, long.MinValue + 1, long.MaxValue - 1 };
-        var ms = new MemoryStream();
-        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(ms, signed: true);
+        var buf = new EngineeredWood.Orc.Encodings.GrowableBuffer();
+        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(buf, signed: true);
         encoder.WriteValues(original);
         encoder.Flush();
 
-        var bytes = ms.ToArray();
+        var bytes = buf.WrittenSpan.ToArray();
         var decoder = new EngineeredWood.Orc.Encodings.RleDecoderV2(new EngineeredWood.Orc.Encodings.OrcByteStream(bytes, 0, bytes.Length), signed: true);
         var decoded = new long[original.Length];
         decoder.ReadValues(decoded);
@@ -3620,11 +3620,11 @@ public class OrcWriterTests
     [Fact]
     public void RleV2_FlushWithoutData_NoOutput()
     {
-        var ms = new MemoryStream();
-        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(ms, signed: true);
+        var buf = new EngineeredWood.Orc.Encodings.GrowableBuffer();
+        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(buf, signed: true);
         encoder.Flush();
         encoder.Flush(); // double flush
-        Assert.Equal(0, ms.Length);
+        Assert.Equal(0, buf.Length);
     }
 
     [Fact]
@@ -3947,12 +3947,12 @@ public class OrcWriterTests
             100, 255, 65535, 16777215,
         };
 
-        var ms = new MemoryStream();
-        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(ms, signed: false);
+        var buf = new EngineeredWood.Orc.Encodings.GrowableBuffer();
+        var encoder = new EngineeredWood.Orc.Encodings.RleEncoderV2(buf, signed: false);
         encoder.WriteValues(original);
         encoder.Flush();
 
-        var bytes = ms.ToArray();
+        var bytes = buf.WrittenSpan.ToArray();
         var decoder = new EngineeredWood.Orc.Encodings.RleDecoderV2(new EngineeredWood.Orc.Encodings.OrcByteStream(bytes, 0, bytes.Length), signed: false);
         var decoded = new long[original.Length];
         decoder.ReadValues(decoded);

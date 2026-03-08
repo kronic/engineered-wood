@@ -11,8 +11,8 @@ internal sealed class DecimalColumnWriter : ColumnWriter
 {
     private readonly int _precision;
     private readonly int _scale;
-    private readonly MemoryStream _dataStream = new();
-    private readonly MemoryStream _secondaryStream = new();
+    private readonly GrowableBuffer _dataStream = new();
+    private readonly GrowableBuffer _secondaryStream = new();
     private readonly RleEncoderV2 _scaleEncoder;
 
     // Statistics
@@ -145,8 +145,8 @@ internal sealed class DecimalColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
-        _secondaryStream.SetLength(0);
+        _dataStream.Reset();
+        _secondaryStream.Reset();
         _minLong = long.MaxValue;
         _maxLong = long.MinValue;
         _hasValues = false;

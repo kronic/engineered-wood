@@ -8,8 +8,8 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class TimestampColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
-    private readonly MemoryStream _secondaryStream = new();
+    private readonly GrowableBuffer _dataStream = new();
+    private readonly GrowableBuffer _secondaryStream = new();
     private readonly RleEncoderV2 _dataEncoder;
     private readonly RleEncoderV2 _secondaryEncoder;
     private long _minMillis = long.MaxValue;
@@ -127,8 +127,8 @@ internal sealed class TimestampColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
-        _secondaryStream.SetLength(0);
+        _dataStream.Reset();
+        _secondaryStream.Reset();
         _minMillis = long.MaxValue;
         _maxMillis = long.MinValue;
         _hasValues = false;

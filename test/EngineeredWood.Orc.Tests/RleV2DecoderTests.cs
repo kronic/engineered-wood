@@ -74,12 +74,12 @@ public class RleV2DecoderTests
                 original[i] = rng.Next(50);
         }
 
-        var ms = new MemoryStream();
-        var encoder = new RleEncoderV2(ms, signed: true);
+        var buf = new GrowableBuffer();
+        var encoder = new RleEncoderV2(buf, signed: true);
         encoder.WriteValues(original);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new RleDecoderV2(new OrcByteStream(decoderBytes, 0, decoderBytes.Length), signed: true);
         var decoded = new long[100];
         decoder.ReadValues(decoded);
@@ -96,12 +96,12 @@ public class RleV2DecoderTests
             var original = new long[count];
             Array.Fill(original, 42L);
 
-            var ms = new MemoryStream();
-            var encoder = new RleEncoderV2(ms, signed: true);
+            var buf = new GrowableBuffer();
+            var encoder = new RleEncoderV2(buf, signed: true);
             encoder.WriteValues(original);
             encoder.Flush();
 
-            var decoderBytes = ms.ToArray();
+            var decoderBytes = buf.WrittenSpan.ToArray();
             var decoder = new RleDecoderV2(new OrcByteStream(decoderBytes, 0, decoderBytes.Length), signed: true);
             var decoded = new long[count];
             decoder.ReadValues(decoded);
@@ -120,12 +120,12 @@ public class RleV2DecoderTests
         for (int i = 0; i < 10; i++) original[i] = 6;
         for (int i = 10; i < 50; i++) original[i] = 7;
 
-        var ms = new MemoryStream();
-        var encoder = new RleEncoderV2(ms, signed: false);
+        var buf = new GrowableBuffer();
+        var encoder = new RleEncoderV2(buf, signed: false);
         encoder.WriteValues(original);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new RleDecoderV2(new OrcByteStream(decoderBytes, 0, decoderBytes.Length), signed: false);
         var decoded = new long[50];
         decoder.ReadValues(decoded);
@@ -138,12 +138,12 @@ public class RleV2DecoderTests
     public void EncoderDecoder_ShortRepeat_Negative()
     {
         var original = new long[] { -100, -100, -100, -100, -100 };
-        var ms = new MemoryStream();
-        var encoder = new RleEncoderV2(ms, signed: true);
+        var buf = new GrowableBuffer();
+        var encoder = new RleEncoderV2(buf, signed: true);
         encoder.WriteValues(original);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new RleDecoderV2(new OrcByteStream(decoderBytes, 0, decoderBytes.Length), signed: true);
         var decoded = new long[5];
         decoder.ReadValues(decoded);

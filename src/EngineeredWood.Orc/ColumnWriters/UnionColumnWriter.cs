@@ -9,7 +9,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class UnionColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _tagStream = new();
+    private readonly GrowableBuffer _tagStream = new();
     private readonly ByteRleEncoder _tagEncoder;
     private readonly List<ColumnWriter> _children = [];
 
@@ -175,7 +175,7 @@ internal sealed class UnionColumnWriter : ColumnWriter
 
         // Build new offsets and data
         var newOffsets = new int[indices.Count + 1];
-        var newDataStream = new MemoryStream();
+        var newDataStream = new GrowableBuffer();
         newOffsets[0] = 0;
         for (int i = 0; i < indices.Count; i++)
         {
@@ -191,7 +191,7 @@ internal sealed class UnionColumnWriter : ColumnWriter
         var newData = new ArrayData(data.DataType, indices.Count, nullCount, 0,
             [validityBuffer,
              new ArrowBuffer(MemoryMarshal.AsBytes(newOffsets.AsSpan()).ToArray()),
-             new ArrowBuffer(newDataStream.ToArray())]);
+             new ArrowBuffer(newDataStream.WrittenSpan.ToArray())]);
         return ArrowArrayFactory.BuildArray(newData);
     }
 
@@ -274,6 +274,6 @@ internal sealed class UnionColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _tagStream.SetLength(0);
+        _tagStream.Reset();
     }
 }

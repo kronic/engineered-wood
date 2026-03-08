@@ -7,7 +7,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class MapColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _lengthStream = new();
+    private readonly GrowableBuffer _lengthStream = new();
     private readonly RleEncoderV2 _lengthEncoder;
     private ColumnWriter? _keyWriter;
     private ColumnWriter? _valueWriter;
@@ -111,7 +111,7 @@ internal sealed class MapColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _lengthStream.SetLength(0);
+        _lengthStream.Reset();
         _minChildren = long.MaxValue;
         _maxChildren = long.MinValue;
         _totalChildren = 0;

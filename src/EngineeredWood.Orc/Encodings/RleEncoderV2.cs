@@ -11,7 +11,7 @@ namespace EngineeredWood.Orc.Encodings;
 internal sealed class RleEncoderV2
 {
     private const int MaxRunLength = 512;
-    private readonly Stream _output;
+    private readonly GrowableBuffer _output;
     private readonly bool _signed;
     private readonly long[] _buffer = new long[MaxRunLength];
     private int _count;
@@ -19,7 +19,7 @@ internal sealed class RleEncoderV2
     /// <summary>Number of values currently buffered but not yet flushed to the output stream.</summary>
     public int BufferedCount => _count;
 
-    public RleEncoderV2(Stream output, bool signed)
+    public RleEncoderV2(GrowableBuffer output, bool signed)
     {
         _output = output;
         _signed = signed;
@@ -365,9 +365,15 @@ internal sealed class RleEncoderV2
 
     private static int VarIntSize(long value) => Varint.SignedSize(value);
 
-    internal static void WriteUnsignedVarInt(Stream output, long value)
-        => Varint.WriteUnsigned(output, (ulong)value);
+    internal static void WriteUnsignedVarInt(GrowableBuffer output, long value)
+    {
+        var span = output.GetSpan(10);
+        output.Advance(Varint.WriteUnsigned(span, (ulong)value));
+    }
 
-    internal static void WriteSignedVarInt(Stream output, long value)
-        => Varint.WriteSigned(output, value);
+    internal static void WriteSignedVarInt(GrowableBuffer output, long value)
+    {
+        var span = output.GetSpan(10);
+        output.Advance(Varint.WriteSigned(span, value));
+    }
 }

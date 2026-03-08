@@ -2,20 +2,20 @@ namespace EngineeredWood.Orc.Encodings;
 
 /// <summary>
 /// ORC Byte Run Length Encoder.
-/// Runs of 3+ identical bytes → run header + value.
-/// Non-repeating sequences → literal header + bytes.
+/// Runs of 3+ identical bytes -> run header + value.
+/// Non-repeating sequences -> literal header + bytes.
 /// </summary>
 internal sealed class ByteRleEncoder
 {
     private const int MaxRunLength = 130;
     private const int MaxLiteralLength = 128;
-    private readonly Stream _output;
+    private readonly GrowableBuffer _output;
     private readonly byte[] _literals = new byte[MaxLiteralLength];
     private int _literalCount;
 
     public int BufferedCount => _literalCount;
 
-    public ByteRleEncoder(Stream output)
+    public ByteRleEncoder(GrowableBuffer output)
     {
         _output = output;
     }
@@ -77,7 +77,7 @@ internal sealed class BooleanEncoder
     private int _currentByte;
     private int _bitsUsed;
 
-    public BooleanEncoder(Stream output)
+    public BooleanEncoder(GrowableBuffer output)
     {
         _byteEncoder = new ByteRleEncoder(output);
     }

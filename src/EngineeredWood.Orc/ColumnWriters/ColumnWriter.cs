@@ -13,7 +13,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 internal abstract class ColumnWriter
 {
     public int ColumnId { get; }
-    protected readonly MemoryStream PresentStream = new();
+    protected readonly GrowableBuffer PresentStream = new();
     protected readonly BooleanEncoder PresentEncoder;
     protected bool HasNulls;          // Row-group level: reset at row group boundaries
     protected bool StripeHasNulls;    // Stripe level: only reset with full Reset()
@@ -149,7 +149,7 @@ internal abstract class ColumnWriter
     /// </summary>
     public virtual void Reset()
     {
-        PresentStream.SetLength(0);
+        PresentStream.Reset();
         HasNulls = false;
         StripeHasNulls = false;
         RowCount = 0;
@@ -270,9 +270,9 @@ internal sealed class OrcStream
 {
     public int ColumnId { get; }
     public ProtoStream.Types.Kind Kind { get; }
-    public MemoryStream Data { get; }
+    public GrowableBuffer Data { get; }
 
-    public OrcStream(int columnId, ProtoStream.Types.Kind kind, MemoryStream data)
+    public OrcStream(int columnId, ProtoStream.Types.Kind kind, GrowableBuffer data)
     {
         ColumnId = columnId;
         Kind = kind;

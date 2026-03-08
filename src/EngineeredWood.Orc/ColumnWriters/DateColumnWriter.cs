@@ -7,7 +7,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class DateColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private readonly RleEncoderV2 _encoder;
     private int _min = int.MaxValue;
     private int _max = int.MinValue;
@@ -90,7 +90,7 @@ internal sealed class DateColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _min = int.MaxValue;
         _max = int.MinValue;
         _hasValues = false;

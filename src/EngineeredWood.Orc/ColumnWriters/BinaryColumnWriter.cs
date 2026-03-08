@@ -7,8 +7,8 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class BinaryColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
-    private readonly MemoryStream _lengthStream = new();
+    private readonly GrowableBuffer _dataStream = new();
+    private readonly GrowableBuffer _lengthStream = new();
     private readonly RleEncoderV2 _lengthEncoder;
     private long _totalLength;
 
@@ -85,8 +85,8 @@ internal sealed class BinaryColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
-        _lengthStream.SetLength(0);
+        _dataStream.Reset();
+        _lengthStream.Reset();
         _totalLength = 0;
     }
 }

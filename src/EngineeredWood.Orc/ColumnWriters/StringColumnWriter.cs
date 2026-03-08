@@ -17,8 +17,8 @@ internal sealed class StringColumnWriter : ColumnWriter
     private long _totalLength;
 
     // Direct encoding streams
-    private readonly MemoryStream _dataStream = new();
-    private readonly MemoryStream _lengthStream = new();
+    private readonly GrowableBuffer _dataStream = new();
+    private readonly GrowableBuffer _lengthStream = new();
     private readonly RleEncoderV2 _lengthEncoder;
 
     // Dictionary encoding state
@@ -178,8 +178,8 @@ internal sealed class StringColumnWriter : ColumnWriter
         if (_useDictionary)
         {
             // Encode dictionary data + lengths
-            var dictDataStream = new MemoryStream();
-            var dictLengthStream = new MemoryStream();
+            var dictDataStream = new GrowableBuffer();
+            var dictLengthStream = new GrowableBuffer();
             var dictLengthEncoder = new RleEncoderV2(dictLengthStream, signed: false);
 
             Span<long> len = stackalloc long[1];
@@ -192,7 +192,7 @@ internal sealed class StringColumnWriter : ColumnWriter
             dictLengthEncoder.Flush();
 
             // Encode indices as DATA stream
-            var indicesStream = new MemoryStream();
+            var indicesStream = new GrowableBuffer();
             var indicesEncoder = new RleEncoderV2(indicesStream, signed: false);
             Span<long> idx = stackalloc long[1];
             foreach (int index in _dictIndices!)
@@ -263,8 +263,8 @@ internal sealed class StringColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
-        _lengthStream.SetLength(0);
+        _dataStream.Reset();
+        _lengthStream.Reset();
         _minValue = null;
         _maxValue = null;
         _totalLength = 0;

@@ -7,7 +7,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class BooleanColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private readonly BooleanEncoder _encoder;
     private long _trueCount;
 
@@ -79,7 +79,7 @@ internal sealed class BooleanColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _trueCount = 0;
     }
 }

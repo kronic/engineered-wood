@@ -8,8 +8,8 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_SingleBits()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         writer.WriteBits(1, 1);
         writer.WriteBits(0, 1);
@@ -18,7 +18,7 @@ public class BitWriterReaderTests
         writer.WriteBits(0, 1);
         writer.Flush();
 
-        var bytes1 = ms.ToArray();
+        var bytes1 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes1, 0, bytes1.Length));
 
         Assert.Equal(1, reader.ReadBits(1));
@@ -31,8 +31,8 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_MultipleBitWidths()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         writer.WriteBits(1, 1);
         writer.WriteBits(0xA, 4);
@@ -42,7 +42,7 @@ public class BitWriterReaderTests
         writer.WriteBits(0x123456789ABCDEF0L, 64);
         writer.Flush();
 
-        var bytes2 = ms.ToArray();
+        var bytes2 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes2, 0, bytes2.Length));
 
         Assert.Equal(1, reader.ReadBits(1));
@@ -56,14 +56,14 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_PackedInts()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         long[] values = [3, 7, 1, 0, 5, 2, 6, 4];
         writer.WritePackedInts(values, 3);
         writer.Flush();
 
-        var bytes3 = ms.ToArray();
+        var bytes3 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes3, 0, bytes3.Length));
 
         var result = new long[8];
@@ -75,13 +75,13 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_ZeroBits()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         writer.WriteBits(0, 0);
         writer.Flush();
 
-        var bytes4 = ms.ToArray();
+        var bytes4 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes4, 0, bytes4.Length));
 
         Assert.Equal(0, reader.ReadBits(0));
@@ -90,14 +90,14 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_CrossByteBoundary()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         writer.WriteBits(0x1F, 5); // 5 bits: 11111
         writer.WriteBits(0x7F, 7); // 7 bits: 1111111 (crosses byte boundary)
         writer.Flush();
 
-        var bytes5 = ms.ToArray();
+        var bytes5 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes5, 0, bytes5.Length));
 
         Assert.Equal(0x1F, reader.ReadBits(5));
@@ -107,13 +107,13 @@ public class BitWriterReaderTests
     [Fact]
     public void BitRoundTrip_MaxValue64Bits()
     {
-        using var ms = new MemoryStream();
-        var writer = new BitWriter(ms);
+        var buf = new GrowableBuffer();
+        var writer = new BitWriter(buf);
 
         writer.WriteBits(long.MaxValue, 64);
         writer.Flush();
 
-        var bytes6 = ms.ToArray();
+        var bytes6 = buf.WrittenSpan.ToArray();
         var reader = new BitReader(new OrcByteStream(bytes6, 0, bytes6.Length));
 
         Assert.Equal(long.MaxValue, reader.ReadBits(64));
@@ -125,15 +125,15 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_RunOfIdentical()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[10];
         Array.Fill(input, (byte)0xAB);
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[10];
@@ -145,14 +145,14 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_Literals()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         byte[] input = [1, 2, 3, 4, 5, 6, 7, 8];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[8];
@@ -164,8 +164,8 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_MixedRunsAndLiterals()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         // Run of 5 As, then 4 distinct bytes, then run of 6 Bs
         byte[] input = [
@@ -176,7 +176,7 @@ public class ByteRleTests
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[input.Length];
@@ -188,14 +188,14 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_SingleByte()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         byte[] input = [42];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[1];
@@ -207,15 +207,15 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_LongRun()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[130];
         Array.Fill(input, (byte)0xCC);
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[130];
@@ -227,8 +227,8 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_LongLiterals()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[128];
         for (int i = 0; i < 128; i++)
@@ -236,7 +236,7 @@ public class ByteRleTests
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[128];
@@ -248,13 +248,13 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_Empty()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         encoder.WriteValues(ReadOnlySpan<byte>.Empty);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[0];
@@ -266,14 +266,14 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_AllZeros()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[50]; // all zeros by default
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new byte[50];
@@ -285,8 +285,8 @@ public class ByteRleTests
     [Fact]
     public void ByteRle_ReadInSmallBatches()
     {
-        using var ms = new MemoryStream();
-        var encoder = new ByteRleEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[20];
         for (int i = 0; i < 20; i++)
@@ -294,7 +294,7 @@ public class ByteRleTests
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new ByteRleDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var allOutput = new byte[20];
@@ -315,15 +315,15 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_AllTrue()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         var input = new bool[10];
         Array.Fill(input, true);
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[10];
@@ -335,14 +335,14 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_AllFalse()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         var input = new bool[10]; // all false by default
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[10];
@@ -354,8 +354,8 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_Alternating()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         var input = new bool[12];
         for (int i = 0; i < input.Length; i++)
@@ -363,7 +363,7 @@ public class BooleanEncoderDecoderTests
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[12];
@@ -375,14 +375,14 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_SingleValue()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         bool[] input = [true];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[1];
@@ -394,14 +394,14 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_SevenValues()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         bool[] input = [true, false, true, true, false, false, true];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[7];
@@ -413,14 +413,14 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_EightValues()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         bool[] input = [true, false, true, false, true, false, true, false];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[8];
@@ -432,14 +432,14 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_NineValues()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         bool[] input = [true, true, false, true, false, false, true, true, false];
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[9];
@@ -451,8 +451,8 @@ public class BooleanEncoderDecoderTests
     [Fact]
     public void Boolean_LargeCount()
     {
-        using var ms = new MemoryStream();
-        var encoder = new BooleanEncoder(ms);
+        var buf = new GrowableBuffer();
+        var encoder = new BooleanEncoder(buf);
 
         var rng = new Random(42); // fixed seed for reproducibility
         var input = new bool[100];
@@ -461,7 +461,7 @@ public class BooleanEncoderDecoderTests
         encoder.WriteValues(input);
         encoder.Flush();
 
-        var decoderBytes = ms.ToArray();
+        var decoderBytes = buf.WrittenSpan.ToArray();
         var decoder = new BooleanDecoder(new OrcByteStream(decoderBytes, 0, decoderBytes.Length));
 
         var output = new bool[100];

@@ -1,4 +1,5 @@
 using Apache.Arrow;
+using EngineeredWood.Orc.Encodings;
 using EngineeredWood.Orc.Proto;
 using ProtoStream = EngineeredWood.Orc.Proto.Stream;
 
@@ -6,7 +7,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class FloatColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private double _min = double.PositiveInfinity;
     private double _max = double.NegativeInfinity;
     private double _sum;
@@ -81,7 +82,7 @@ internal sealed class FloatColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _min = double.PositiveInfinity;
         _max = double.NegativeInfinity;
         _sum = 0;
@@ -91,7 +92,7 @@ internal sealed class FloatColumnWriter : ColumnWriter
 
 internal sealed class DoubleColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private double _min = double.PositiveInfinity;
     private double _max = double.NegativeInfinity;
     private double _sum;
@@ -166,7 +167,7 @@ internal sealed class DoubleColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _min = double.PositiveInfinity;
         _max = double.NegativeInfinity;
         _sum = 0;

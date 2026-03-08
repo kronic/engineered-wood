@@ -9,7 +9,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 internal sealed class IntegerColumnWriter : ColumnWriter
 {
     private readonly IArrowType _arrowType;
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private readonly RleEncoderV2 _encoder;
     private long _min = long.MaxValue;
     private long _max = long.MinValue;
@@ -132,7 +132,7 @@ internal sealed class IntegerColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _min = long.MaxValue;
         _max = long.MinValue;
         _sum = 0;

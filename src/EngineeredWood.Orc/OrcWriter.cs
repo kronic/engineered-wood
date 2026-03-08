@@ -268,27 +268,28 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
 
         foreach (var s in streams)
         {
-            byte[] streamData;
+            var rawSpan = s.Data.WrittenSpan;
+            byte[]? compressedData = null;
+            ReadOnlyMemory<byte> writeData;
+
             if (_options.Compression != CompressionKind.None)
             {
-                s.Data.Position = 0;
-                var raw = s.Data.ToArray();
-                streamData = OrcCompression.Compress(_options.Compression, raw, _options.CompressionBlockSize);
+                compressedData = OrcCompression.Compress(_options.Compression, rawSpan, _options.CompressionBlockSize);
+                writeData = compressedData;
             }
             else
             {
-                s.Data.Position = 0;
-                streamData = s.Data.ToArray();
+                writeData = s.Data.WrittenMemory;
             }
 
-            await _file.WriteAsync(streamData, cancellationToken).ConfigureAwait(false);
-            dataLength += streamData.Length;
+            await _file.WriteAsync(writeData, cancellationToken).ConfigureAwait(false);
+            dataLength += writeData.Length;
 
             var descriptor = new Proto.Stream
             {
                 Column = (uint)s.ColumnId,
                 Kind = s.Kind,
-                Length = (ulong)streamData.Length
+                Length = (ulong)writeData.Length
             };
             streamDescriptors.Add(descriptor);
         }
@@ -348,10 +349,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
         // Build a lookup of stream data by (columnId, streamKind) for position translation
         var streamDataLookup = new Dictionary<(int, Proto.Stream.Types.Kind), byte[]>();
         foreach (var s in streams)
-        {
-            s.Data.Position = 0;
-            streamDataLookup[(s.ColumnId, s.Kind)] = s.Data.ToArray();
-        }
+            streamDataLookup[(s.ColumnId, s.Kind)] = s.Data.WrittenSpan.ToArray();
 
         var layout = new List<int>();
 

@@ -1,17 +1,17 @@
 namespace EngineeredWood.Orc.Encodings;
 
 /// <summary>
-/// Writes bits and packed integers to a byte stream. Big-endian bit order (MSB first).
+/// Writes bits and packed integers to a growable byte buffer. Big-endian bit order (MSB first).
 /// </summary>
 internal sealed class BitWriter
 {
-    private readonly Stream _stream;
+    private readonly GrowableBuffer _buffer;
     private int _currentByte;
     private int _bitsUsed;
 
-    public BitWriter(Stream stream)
+    public BitWriter(GrowableBuffer buffer)
     {
-        _stream = stream;
+        _buffer = buffer;
     }
 
     public void WriteBits(long value, int numBits)
@@ -50,7 +50,7 @@ internal sealed class BitWriter
 
     private void FlushByte()
     {
-        _stream.WriteByte((byte)_currentByte);
+        _buffer.WriteByte((byte)_currentByte);
         _currentByte = 0;
         _bitsUsed = 0;
     }

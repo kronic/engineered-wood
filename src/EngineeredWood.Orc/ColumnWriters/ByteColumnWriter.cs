@@ -7,7 +7,7 @@ namespace EngineeredWood.Orc.ColumnWriters;
 
 internal sealed class ByteColumnWriter : ColumnWriter
 {
-    private readonly MemoryStream _dataStream = new();
+    private readonly GrowableBuffer _dataStream = new();
     private readonly ByteRleEncoder _encoder;
     private long _min = long.MaxValue;
     private long _max = long.MinValue;
@@ -94,7 +94,7 @@ internal sealed class ByteColumnWriter : ColumnWriter
     public override void Reset()
     {
         base.Reset();
-        _dataStream.SetLength(0);
+        _dataStream.Reset();
         _min = long.MaxValue;
         _max = long.MinValue;
         _sum = 0;
