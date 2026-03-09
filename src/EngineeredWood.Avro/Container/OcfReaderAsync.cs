@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.IO.Pipelines;
 using EngineeredWood.Avro.Schema;
 using EngineeredWood.Buffers;
 using EngineeredWood.Encodings;
@@ -6,12 +8,13 @@ namespace EngineeredWood.Avro.Container;
 
 /// <summary>
 /// Asynchronously reads Avro Object Container Format (OCF) files: header + data blocks.
+/// Uses <see cref="PipeReader"/> to buffer stream data for efficient synchronous varint parsing.
 /// </summary>
 internal sealed class OcfReaderAsync : IAsyncDisposable
 {
     private static readonly byte[] Magic = "Obj\x01"u8.ToArray();
 
-    private readonly Stream _stream;
+    private readonly PipeReader _pipeReader;
     private readonly byte[] _syncMarker;
     private readonly AvroCodec _codec;
     private readonly AvroRecordSchema _writerSchema;
@@ -24,10 +27,10 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
     public AvroCodec Codec => _codec;
     public IReadOnlyDictionary<string, byte[]> Metadata => _metadata;
 
-    private OcfReaderAsync(Stream stream, AvroRecordSchema writerSchema, AvroCodec codec,
+    private OcfReaderAsync(PipeReader pipeReader, AvroRecordSchema writerSchema, AvroCodec codec,
         byte[] syncMarker, IReadOnlyDictionary<string, byte[]> metadata)
     {
-        _stream = stream;
+        _pipeReader = pipeReader;
         _writerSchema = writerSchema;
         _codec = codec;
         _syncMarker = syncMarker;
@@ -36,18 +39,27 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
 
     public static async ValueTask<OcfReaderAsync> OpenAsync(Stream stream, CancellationToken ct = default)
     {
+        var pipeReader = PipeReader.Create(stream);
+
         // Read magic bytes
-        var magic = new byte[4];
-        await ReadExactAsync(stream, magic, ct).ConfigureAwait(false);
-        if (!magic.AsSpan().SequenceEqual(Magic))
+        var result = await pipeReader.ReadAtLeastAsync(4, ct).ConfigureAwait(false);
+        if (result.Buffer.Length < 4)
+            throw new InvalidDataException("Not an Avro Object Container File (truncated).");
+        Span<byte> magicBuf = stackalloc byte[4];
+        result.Buffer.Slice(0, 4).CopyTo(magicBuf);
+        pipeReader.AdvanceTo(result.Buffer.GetPosition(4));
+        if (!magicBuf.SequenceEqual(Magic))
             throw new InvalidDataException("Not an Avro Object Container File (invalid magic).");
 
         // Read file metadata (Avro map<bytes>)
-        var metadata = await ReadMetadataMapAsync(stream, ct).ConfigureAwait(false);
+        var metadata = await ReadMetadataMapAsync(pipeReader, ct).ConfigureAwait(false);
 
         // Read 16-byte sync marker
-        var syncMarker = new byte[16];
-        await ReadExactAsync(stream, syncMarker, ct).ConfigureAwait(false);
+        result = await pipeReader.ReadAtLeastAsync(16, ct).ConfigureAwait(false);
+        if (result.Buffer.Length < 16)
+            throw new EndOfStreamException("Unexpected end of stream reading sync marker.");
+        var syncMarker = result.Buffer.Slice(0, 16).ToArray();
+        pipeReader.AdvanceTo(result.Buffer.GetPosition(16));
 
         // Extract schema
         if (!metadata.TryGetValue("avro.schema", out var schemaBytes))
@@ -65,7 +77,7 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
             codec = AvroCompression.ParseCodecName(codecName);
         }
 
-        return new OcfReaderAsync(stream, recordSchema, codec, syncMarker, metadata);
+        return new OcfReaderAsync(pipeReader, recordSchema, codec, syncMarker, metadata);
     }
 
     /// <summary>
@@ -80,7 +92,7 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         long objectCount;
         try
         {
-            objectCount = await ReadVarLongAsync(_stream, ct).ConfigureAwait(false);
+            objectCount = await ReadVarLongAsync(_pipeReader, ct).ConfigureAwait(false);
         }
         catch (EndOfStreamException)
         {
@@ -89,21 +101,28 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         }
 
         // Read block byte size (long varint)
-        long blockSize = await ReadVarLongAsync(_stream, ct).ConfigureAwait(false);
+        long blockSize = await ReadVarLongAsync(_pipeReader, ct).ConfigureAwait(false);
         if (blockSize < 0 || blockSize > int.MaxValue)
             throw new InvalidDataException($"Invalid block size: {blockSize}");
 
-        // Read compressed block data into reusable buffer
+        // Read block data + sync marker in a single async call
         int size = (int)blockSize;
+        int totalNeeded = size + 16;
+        var readResult = await _pipeReader.ReadAtLeastAsync(totalNeeded, ct).ConfigureAwait(false);
+        if (readResult.Buffer.Length < totalNeeded)
+            throw new EndOfStreamException("Unexpected end of stream reading data block.");
+
+        // Copy block data into reusable buffer
         if (_readBuffer.Length < size)
             _readBuffer = new byte[size];
-        await ReadExactAsync(_stream, _readBuffer, 0, size, ct).ConfigureAwait(false);
+        readResult.Buffer.Slice(0, size).CopyTo(_readBuffer);
 
-        // Read and verify sync marker
-        var sync = new byte[16];
-        await ReadExactAsync(_stream, sync, ct).ConfigureAwait(false);
-        if (!sync.AsSpan().SequenceEqual(_syncMarker))
+        // Verify sync marker directly from pipe buffer (no allocation)
+        var syncSlice = readResult.Buffer.Slice(size, 16);
+        if (!SequenceEquals(syncSlice, _syncMarker))
             throw new InvalidDataException("Sync marker mismatch in OCF data block.");
+
+        _pipeReader.AdvanceTo(readResult.Buffer.GetPosition(totalNeeded));
 
         // Decompress into reusable buffer (null codec uses read buffer directly)
         if (_codec == AvroCodec.Null)
@@ -115,27 +134,27 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
     }
 
     private static async ValueTask<Dictionary<string, byte[]>> ReadMetadataMapAsync(
-        Stream stream, CancellationToken ct)
+        PipeReader reader, CancellationToken ct)
     {
         var metadata = new Dictionary<string, byte[]>();
 
         // Avro map encoding: blocks of (count, key-value pairs), terminated by 0-count block
         while (true)
         {
-            long count = await ReadVarLongAsync(stream, ct).ConfigureAwait(false);
+            long count = await ReadVarLongAsync(reader, ct).ConfigureAwait(false);
             if (count == 0) break;
 
             if (count < 0)
             {
                 // Negative count: next long is block byte size (skip it)
                 count = -count;
-                await ReadVarLongAsync(stream, ct).ConfigureAwait(false); // block byte size
+                await ReadVarLongAsync(reader, ct).ConfigureAwait(false); // block byte size
             }
 
             for (long i = 0; i < count; i++)
             {
-                var key = await ReadAvroStringAsync(stream, ct).ConfigureAwait(false);
-                var value = await ReadAvroBytesAsync(stream, ct).ConfigureAwait(false);
+                var key = await ReadAvroStringAsync(reader, ct).ConfigureAwait(false);
+                var value = await ReadAvroBytesAsync(reader, ct).ConfigureAwait(false);
                 metadata[key] = value;
             }
         }
@@ -143,65 +162,103 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         return metadata;
     }
 
-    private static async ValueTask<long> ReadVarLongAsync(Stream stream, CancellationToken ct)
+    /// <summary>
+    /// Reads a zigzag-encoded varint from the pipe. Uses synchronous parsing over buffered data,
+    /// only awaiting when the pipe needs to fetch more data from the underlying stream.
+    /// </summary>
+    private static async ValueTask<long> ReadVarLongAsync(PipeReader reader, CancellationToken ct)
+    {
+        while (true)
+        {
+            var result = await reader.ReadAsync(ct).ConfigureAwait(false);
+            if (result.Buffer.IsEmpty && result.IsCompleted)
+                throw new EndOfStreamException("Unexpected end of stream reading varint.");
+
+            var seqReader = new SequenceReader<byte>(result.Buffer);
+            if (TryReadVarLong(ref seqReader, out long value))
+            {
+                reader.AdvanceTo(seqReader.Position);
+                return value;
+            }
+
+            // Not enough bytes buffered — mark all as examined, consume nothing, and wait for more
+            reader.AdvanceTo(result.Buffer.Start, result.Buffer.End);
+
+            if (result.IsCompleted)
+                throw new EndOfStreamException("Unexpected end of stream reading varint.");
+        }
+    }
+
+    /// <summary>
+    /// Tries to parse a zigzag-encoded varint from the sequence reader.
+    /// Returns false if there aren't enough bytes available yet.
+    /// </summary>
+    private static bool TryReadVarLong(ref SequenceReader<byte> reader, out long value)
     {
         long result = 0;
         int shift = 0;
-        var buf = new byte[1];
-        while (true)
+
+        while (reader.TryRead(out byte b))
         {
-            int read = await stream.ReadAsync(buf, ct).ConfigureAwait(false);
-            if (read == 0) throw new EndOfStreamException("Unexpected end of stream reading varint.");
-            result |= (long)(buf[0] & 0x7F) << shift;
-            if ((buf[0] & 0x80) == 0)
-                return Varint.ZigzagDecode(result);
+            result |= (long)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0)
+            {
+                value = Varint.ZigzagDecode(result);
+                return true;
+            }
             shift += 7;
         }
+
+        // Incomplete varint — caller uses buffer start as consumed position, so no rewind needed
+        value = 0;
+        return false;
     }
 
-    private static async ValueTask<string> ReadAvroStringAsync(Stream stream, CancellationToken ct)
+    private static async ValueTask<string> ReadAvroStringAsync(PipeReader reader, CancellationToken ct)
     {
-        long len = await ReadVarLongAsync(stream, ct).ConfigureAwait(false);
+        long len = await ReadVarLongAsync(reader, ct).ConfigureAwait(false);
         if (len < 0 || len > int.MaxValue)
             throw new InvalidDataException($"Invalid string length: {len}");
-        var buf = new byte[(int)len];
-        await ReadExactAsync(stream, buf, ct).ConfigureAwait(false);
+        var buf = await ReadExactAsync(reader, (int)len, ct).ConfigureAwait(false);
         return System.Text.Encoding.UTF8.GetString(buf);
     }
 
-    private static async ValueTask<byte[]> ReadAvroBytesAsync(Stream stream, CancellationToken ct)
+    private static async ValueTask<byte[]> ReadAvroBytesAsync(PipeReader reader, CancellationToken ct)
     {
-        long len = await ReadVarLongAsync(stream, ct).ConfigureAwait(false);
+        long len = await ReadVarLongAsync(reader, ct).ConfigureAwait(false);
         if (len < 0 || len > int.MaxValue)
             throw new InvalidDataException($"Invalid bytes length: {len}");
-        var buf = new byte[(int)len];
-        await ReadExactAsync(stream, buf, ct).ConfigureAwait(false);
-        return buf;
+        return await ReadExactAsync(reader, (int)len, ct).ConfigureAwait(false);
     }
 
-    private static async ValueTask ReadExactAsync(Stream stream, byte[] buffer, CancellationToken ct)
+    /// <summary>
+    /// Reads exactly <paramref name="count"/> bytes from the pipe. Used for header/metadata parsing only.
+    /// </summary>
+    private static async ValueTask<byte[]> ReadExactAsync(PipeReader reader, int count, CancellationToken ct)
     {
-        int total = 0;
-        while (total < buffer.Length)
-        {
-            int read = await stream.ReadAsync(buffer.AsMemory(total), ct).ConfigureAwait(false);
-            if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
-            total += read;
-        }
+        if (count == 0) return [];
+
+        var result = await reader.ReadAtLeastAsync(count, ct).ConfigureAwait(false);
+        if (result.Buffer.Length < count)
+            throw new EndOfStreamException("Unexpected end of stream.");
+        var data = result.Buffer.Slice(0, count).ToArray();
+        reader.AdvanceTo(result.Buffer.GetPosition(count));
+        return data;
     }
 
-    private static async ValueTask ReadExactAsync(Stream stream, byte[] buffer, int offset, int count,
-        CancellationToken ct)
+    private static bool SequenceEquals(ReadOnlySequence<byte> sequence, ReadOnlySpan<byte> expected)
     {
-        int total = 0;
-        while (total < count)
-        {
-            int read = await stream.ReadAsync(buffer.AsMemory(offset + total, count - total), ct)
-                .ConfigureAwait(false);
-            if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
-            total += read;
-        }
+        if (sequence.IsSingleSegment)
+            return sequence.FirstSpan.SequenceEqual(expected);
+
+        Span<byte> temp = stackalloc byte[16];
+        sequence.CopyTo(temp);
+        return temp.SequenceEqual(expected);
     }
 
-    public ValueTask DisposeAsync() => default; // We don't own the stream
+    public ValueTask DisposeAsync()
+    {
+        _pipeReader.Complete();
+        return default;
+    }
 }

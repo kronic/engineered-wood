@@ -54,6 +54,36 @@ public class ReadBenchmarks
     }
 
     [Benchmark]
+    public async Task<long> ReadPrimitives_Uncompressed_Async()
+    {
+        using var ms = new MemoryStream(_primitivesNullBytes);
+        var reader = await new AvroReaderBuilder().BuildAsync(ms);
+        long total = 0;
+        await foreach (var batch in reader) total += batch.Length;
+        return total;
+    }
+
+    [Benchmark]
+    public async Task<long> ReadPrimitives_Snappy_Async()
+    {
+        using var ms = new MemoryStream(_primitivesSnappyBytes);
+        var reader = await new AvroReaderBuilder().BuildAsync(ms);
+        long total = 0;
+        await foreach (var batch in reader) total += batch.Length;
+        return total;
+    }
+
+    [Benchmark]
+    public async Task<long> ReadPrimitives_Deflate_Async()
+    {
+        using var ms = new MemoryStream(_primitivesDeflateBytes);
+        var reader = await new AvroReaderBuilder().BuildAsync(ms);
+        long total = 0;
+        await foreach (var batch in reader) total += batch.Length;
+        return total;
+    }
+
+    [Benchmark]
     public long ReadPrimitives_WithProjection()
     {
         using var ms = new MemoryStream(_primitivesNullBytes);
