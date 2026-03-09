@@ -1,5 +1,5 @@
-using System.Buffers.Binary;
 using EngineeredWood.Avro.Schema;
+using EngineeredWood.Buffers;
 using EngineeredWood.Encodings;
 
 namespace EngineeredWood.Avro.Container;
@@ -16,6 +16,8 @@ internal sealed class OcfReader : IDisposable
     private readonly AvroCodec _codec;
     private readonly AvroRecordSchema _writerSchema;
     private readonly IReadOnlyDictionary<string, byte[]> _metadata;
+    private readonly GrowableBuffer _decompressBuffer = new(4096);
+    private byte[] _readBuffer = new byte[4096];
     private bool _eof;
 
     public AvroRecordSchema WriterSchema => _writerSchema;
@@ -68,9 +70,9 @@ internal sealed class OcfReader : IDisposable
 
     /// <summary>
     /// Reads the next data block. Returns null on EOF.
-    /// The returned span is the decompressed block data containing encoded records.
+    /// The returned memory is valid until the next call to <see cref="ReadBlock"/>.
     /// </summary>
-    public (byte[] data, long objectCount)? ReadBlock()
+    public (ReadOnlyMemory<byte> data, long objectCount)? ReadBlock()
     {
         if (_eof) return null;
 
@@ -91,9 +93,11 @@ internal sealed class OcfReader : IDisposable
         if (blockSize < 0 || blockSize > int.MaxValue)
             throw new InvalidDataException($"Invalid block size: {blockSize}");
 
-        // Read compressed block data
-        var blockData = new byte[(int)blockSize];
-        ReadExact(_stream, blockData);
+        // Read compressed block data into reusable buffer
+        int size = (int)blockSize;
+        if (_readBuffer.Length < size)
+            _readBuffer = new byte[size];
+        ReadExact(_stream, _readBuffer.AsSpan(0, size));
 
         // Read and verify sync marker
         Span<byte> sync = stackalloc byte[16];
@@ -101,20 +105,13 @@ internal sealed class OcfReader : IDisposable
         if (!sync.SequenceEqual(_syncMarker))
             throw new InvalidDataException("Sync marker mismatch in OCF data block.");
 
-        // Decompress if needed
-        byte[] decompressed;
+        // Decompress into reusable buffer (null codec uses read buffer directly)
         if (_codec == AvroCodec.Null)
-        {
-            decompressed = blockData;
-        }
-        else
-        {
-            // For non-snappy codecs we don't know the uncompressed size up front,
-            // so we use a MemoryStream-based approach
-            decompressed = AvroCompression.Decompress(_codec, blockData, 0);
-        }
+            return (new ReadOnlyMemory<byte>(_readBuffer, 0, size), objectCount);
 
-        return (decompressed, objectCount);
+        _decompressBuffer.Reset();
+        AvroCompression.Decompress(_codec, _readBuffer.AsSpan(0, size), _decompressBuffer);
+        return (_decompressBuffer.WrittenMemory, objectCount);
     }
 
     private static Dictionary<string, byte[]> ReadMetadataMap(Stream stream)

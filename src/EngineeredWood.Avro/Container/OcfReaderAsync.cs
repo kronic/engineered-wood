@@ -1,4 +1,5 @@
 using EngineeredWood.Avro.Schema;
+using EngineeredWood.Buffers;
 using EngineeredWood.Encodings;
 
 namespace EngineeredWood.Avro.Container;
@@ -15,6 +16,8 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
     private readonly AvroCodec _codec;
     private readonly AvroRecordSchema _writerSchema;
     private readonly IReadOnlyDictionary<string, byte[]> _metadata;
+    private readonly GrowableBuffer _decompressBuffer = new(4096);
+    private byte[] _readBuffer = new byte[4096];
     private bool _eof;
 
     public AvroRecordSchema WriterSchema => _writerSchema;
@@ -67,9 +70,9 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
 
     /// <summary>
     /// Reads the next data block asynchronously. Returns null on EOF.
-    /// The returned array is the decompressed block data containing encoded records.
+    /// The returned memory is valid until the next call to <see cref="ReadBlockAsync"/>.
     /// </summary>
-    public async ValueTask<(byte[] data, long objectCount)?> ReadBlockAsync(CancellationToken ct = default)
+    public async ValueTask<(ReadOnlyMemory<byte> data, long objectCount)?> ReadBlockAsync(CancellationToken ct = default)
     {
         if (_eof) return null;
 
@@ -90,9 +93,11 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         if (blockSize < 0 || blockSize > int.MaxValue)
             throw new InvalidDataException($"Invalid block size: {blockSize}");
 
-        // Read compressed block data
-        var blockData = new byte[(int)blockSize];
-        await ReadExactAsync(_stream, blockData, ct).ConfigureAwait(false);
+        // Read compressed block data into reusable buffer
+        int size = (int)blockSize;
+        if (_readBuffer.Length < size)
+            _readBuffer = new byte[size];
+        await ReadExactAsync(_stream, _readBuffer, 0, size, ct).ConfigureAwait(false);
 
         // Read and verify sync marker
         var sync = new byte[16];
@@ -100,18 +105,13 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         if (!sync.AsSpan().SequenceEqual(_syncMarker))
             throw new InvalidDataException("Sync marker mismatch in OCF data block.");
 
-        // Decompress if needed (CPU-bound, stays synchronous)
-        byte[] decompressed;
+        // Decompress into reusable buffer (null codec uses read buffer directly)
         if (_codec == AvroCodec.Null)
-        {
-            decompressed = blockData;
-        }
-        else
-        {
-            decompressed = AvroCompression.Decompress(_codec, blockData, 0);
-        }
+            return (new ReadOnlyMemory<byte>(_readBuffer, 0, size), objectCount);
 
-        return (decompressed, objectCount);
+        _decompressBuffer.Reset();
+        AvroCompression.Decompress(_codec, _readBuffer.AsSpan(0, size), _decompressBuffer);
+        return (_decompressBuffer.WrittenMemory, objectCount);
     }
 
     private static async ValueTask<Dictionary<string, byte[]>> ReadMetadataMapAsync(
@@ -185,6 +185,19 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
         while (total < buffer.Length)
         {
             int read = await stream.ReadAsync(buffer.AsMemory(total), ct).ConfigureAwait(false);
+            if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
+            total += read;
+        }
+    }
+
+    private static async ValueTask ReadExactAsync(Stream stream, byte[] buffer, int offset, int count,
+        CancellationToken ct)
+    {
+        int total = 0;
+        while (total < count)
+        {
+            int read = await stream.ReadAsync(buffer.AsMemory(offset + total, count - total), ct)
+                .ConfigureAwait(false);
             if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
             total += read;
         }

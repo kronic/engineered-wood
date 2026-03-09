@@ -15,7 +15,7 @@ public sealed class AvroAsyncReader : IAsyncEnumerable<RecordBatch>, IAsyncDispo
     private readonly RecordBatchAssembler _assembler;
     private readonly int _batchSize;
 
-    private byte[]? _pendingBlock;
+    private ReadOnlyMemory<byte> _pendingBlock;
     private int _pendingOffset;
     private int _pendingRemaining;
 
@@ -71,13 +71,13 @@ public sealed class AvroAsyncReader : IAsyncEnumerable<RecordBatch>, IAsyncDispo
 
         int rowsToRead = Math.Min(_batchSize, _pendingRemaining);
         var (batch, bytesConsumed) = _assembler.Decode(
-            _pendingBlock.AsSpan(_pendingOffset), rowsToRead);
+            _pendingBlock.Span.Slice(_pendingOffset), rowsToRead);
 
         _pendingOffset += bytesConsumed;
         _pendingRemaining -= rowsToRead;
 
         if (_pendingRemaining <= 0)
-            _pendingBlock = null;
+            _pendingBlock = default;
 
         return batch;
     }

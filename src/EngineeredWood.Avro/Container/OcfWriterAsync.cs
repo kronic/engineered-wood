@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using EngineeredWood.Avro.Schema;
+using EngineeredWood.Buffers;
 using EngineeredWood.Encodings;
 
 namespace EngineeredWood.Avro.Container;
@@ -14,6 +15,7 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
     private readonly Stream _stream;
     private readonly AvroCodec _codec;
     private readonly byte[] _syncMarker;
+    private readonly GrowableBuffer _compressBuffer = new(4096);
     private bool _headerWritten;
     private bool _finished;
 
@@ -55,10 +57,19 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
     public async ValueTask WriteBlockAsync(ReadOnlyMemory<byte> encodedData, int objectCount,
         CancellationToken ct = default)
     {
-        var compressed = AvroCompression.Compress(_codec, encodedData.Span);
         await WriteVarLongAsync(objectCount, ct).ConfigureAwait(false);
-        await WriteVarLongAsync(compressed.Length, ct).ConfigureAwait(false);
-        await _stream.WriteAsync(compressed, ct).ConfigureAwait(false);
+        if (_codec == AvroCodec.Null)
+        {
+            await WriteVarLongAsync(encodedData.Length, ct).ConfigureAwait(false);
+            await _stream.WriteAsync(encodedData, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            _compressBuffer.Reset();
+            AvroCompression.Compress(_codec, encodedData.Span, _compressBuffer);
+            await WriteVarLongAsync(_compressBuffer.Length, ct).ConfigureAwait(false);
+            await _stream.WriteAsync(_compressBuffer.WrittenMemory, ct).ConfigureAwait(false);
+        }
         await _stream.WriteAsync(_syncMarker, ct).ConfigureAwait(false);
     }
 

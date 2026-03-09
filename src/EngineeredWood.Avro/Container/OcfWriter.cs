@@ -16,6 +16,7 @@ internal sealed class OcfWriter : IDisposable
     private readonly AvroCodec _codec;
     private readonly byte[] _syncMarker;
     private readonly GrowableBuffer _blockBuffer = new(4096);
+    private readonly GrowableBuffer _compressBuffer = new(4096);
     private long _blockObjectCount;
     private bool _headerWritten;
     private bool _finished;
@@ -56,10 +57,19 @@ internal sealed class OcfWriter : IDisposable
     /// </summary>
     public void WriteBlock(ReadOnlySpan<byte> encodedData, int objectCount)
     {
-        var compressed = AvroCompression.Compress(_codec, encodedData);
         WriteVarLong(_stream, objectCount);
-        WriteVarLong(_stream, compressed.Length);
-        _stream.Write(compressed);
+        if (_codec == AvroCodec.Null)
+        {
+            WriteVarLong(_stream, encodedData.Length);
+            _stream.Write(encodedData);
+        }
+        else
+        {
+            _compressBuffer.Reset();
+            AvroCompression.Compress(_codec, encodedData, _compressBuffer);
+            WriteVarLong(_stream, _compressBuffer.Length);
+            _stream.Write(_compressBuffer.WrittenSpan);
+        }
         _stream.Write(_syncMarker);
     }
 
@@ -80,14 +90,21 @@ internal sealed class OcfWriter : IDisposable
         if (_blockObjectCount == 0) return;
 
         var rawData = _blockBuffer.WrittenSpan;
-        var compressed = AvroCompression.Compress(_codec, rawData);
 
         // Object count (long varint)
         WriteVarLong(_stream, _blockObjectCount);
-        // Block byte size (long varint)
-        WriteVarLong(_stream, compressed.Length);
-        // Compressed data
-        _stream.Write(compressed);
+        if (_codec == AvroCodec.Null)
+        {
+            WriteVarLong(_stream, rawData.Length);
+            _stream.Write(rawData);
+        }
+        else
+        {
+            _compressBuffer.Reset();
+            AvroCompression.Compress(_codec, rawData, _compressBuffer);
+            WriteVarLong(_stream, _compressBuffer.Length);
+            _stream.Write(_compressBuffer.WrittenSpan);
+        }
         // Sync marker
         _stream.Write(_syncMarker);
 

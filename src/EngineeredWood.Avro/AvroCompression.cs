@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO.Hashing;
+using EngineeredWood.Buffers;
 using EngineeredWood.Compression;
 
 namespace EngineeredWood.Avro;
@@ -10,110 +11,140 @@ namespace EngineeredWood.Avro;
 /// </summary>
 internal static class AvroCompression
 {
-    public static byte[] Compress(AvroCodec codec, ReadOnlySpan<byte> data)
+    /// <summary>
+    /// Compresses data into a caller-owned buffer, avoiding per-call allocations.
+    /// The caller should call <see cref="GrowableBuffer.Reset"/> before this method.
+    /// </summary>
+    public static void Compress(AvroCodec codec, ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         if (codec == AvroCodec.Null)
-            return data.ToArray();
+        {
+            output.Write(data);
+            return;
+        }
 
         if (codec == AvroCodec.Snappy)
-            return CompressSnappy(data);
+        {
+            CompressSnappy(data, output);
+            return;
+        }
 
         if (codec == AvroCodec.Lz4)
-            return CompressLz4(data);
+        {
+            CompressLz4(data, output);
+            return;
+        }
 
         var coreCodec = ToCoreCodec(codec);
         int maxLen = Compressor.GetMaxCompressedLength(coreCodec, data.Length);
-        var output = new byte[maxLen];
-        int written = Compressor.Compress(coreCodec, data, output);
-        if (written == output.Length)
-            return output;
-        return output.AsSpan(0, written).ToArray();
+        var span = output.GetSpan(maxLen);
+        int written = Compressor.Compress(coreCodec, data, span);
+        output.Advance(written);
     }
 
-    public static byte[] Decompress(AvroCodec codec, ReadOnlySpan<byte> data, int uncompressedSizeHint)
+    /// <summary>
+    /// Decompresses data into a caller-owned buffer, avoiding per-call allocations.
+    /// The caller should call <see cref="GrowableBuffer.Reset"/> before this method.
+    /// </summary>
+    public static void Decompress(AvroCodec codec, ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         if (codec == AvroCodec.Null)
-            return data.ToArray();
+        {
+            output.Write(data);
+            return;
+        }
 
         if (codec == AvroCodec.Snappy)
-            return DecompressSnappy(data);
+        {
+            DecompressSnappy(data, output);
+            return;
+        }
 
         if (codec == AvroCodec.Lz4)
-            return DecompressLz4(data);
+        {
+            DecompressLz4(data, output);
+            return;
+        }
 
         if (codec == AvroCodec.Zstandard)
-            return DecompressZstd(data);
+        {
+            DecompressZstd(data, output);
+            return;
+        }
 
         // Deflate: unknown uncompressed size, use stream-based decompression
-        return DecompressStream(ToCoreCodec(codec), data);
+        DecompressStream(data, output);
     }
 
-    private static byte[] DecompressStream(CompressionCodec codec, ReadOnlySpan<byte> data)
+    private static void DecompressStream(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         using var sourceStream = new MemoryStream(data.ToArray());
         using var decompressionStream = new System.IO.Compression.DeflateStream(
             sourceStream, System.IO.Compression.CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        decompressionStream.CopyTo(output);
-        return output.ToArray();
+        // Read in chunks into the growable buffer
+        while (true)
+        {
+            var span = output.GetSpan(4096);
+            int read = decompressionStream.Read(span[..4096]);
+            if (read == 0) break;
+            output.Advance(read);
+        }
     }
 
-    private static byte[] DecompressZstd(ReadOnlySpan<byte> data)
+    private static void DecompressZstd(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
-        // Zstd frame header contains the decompressed size
         int size = checked((int)Decompressor.GetDecompressedLength(CompressionCodec.Zstd, data));
-        var output = new byte[size];
-        Decompressor.Decompress(CompressionCodec.Zstd, data, output);
-        return output;
+        var span = output.GetSpan(size);
+        Decompressor.Decompress(CompressionCodec.Zstd, data, span[..size]);
+        output.Advance(size);
     }
 
     /// <summary>
     /// Avro LZ4 = 4-byte LE uncompressed size + LZ4 block data.
     /// Compatible with Python lz4.block.compress(store_size=True).
     /// </summary>
-    private static byte[] CompressLz4(ReadOnlySpan<byte> data)
+    private static void CompressLz4(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
-        int maxLen = Compressor.GetMaxCompressedLength(CompressionCodec.Lz4, data.Length);
-        // Compress into a temporary buffer, then allocate exact-sized result
-        Span<byte> temp = maxLen <= 4096 ? stackalloc byte[maxLen] : new byte[maxLen];
-        int written = Compressor.Compress(CompressionCodec.Lz4, data, temp);
+        // Write 4-byte LE uncompressed size header
+        var header = output.GetSpan(4);
+        BinaryPrimitives.WriteInt32LittleEndian(header, data.Length);
+        output.Advance(4);
 
-        var result = new byte[4 + written];
-        BinaryPrimitives.WriteInt32LittleEndian(result, data.Length);
-        temp[..written].CopyTo(result.AsSpan(4));
-        return result;
+        // Compress directly into the output buffer
+        int maxLen = Compressor.GetMaxCompressedLength(CompressionCodec.Lz4, data.Length);
+        var span = output.GetSpan(maxLen);
+        int written = Compressor.Compress(CompressionCodec.Lz4, data, span);
+        output.Advance(written);
     }
 
-    private static byte[] DecompressLz4(ReadOnlySpan<byte> data)
+    private static void DecompressLz4(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         if (data.Length < 4)
             throw new InvalidDataException("LZ4 data too short for size header.");
 
         int uncompressedSize = BinaryPrimitives.ReadInt32LittleEndian(data);
-        var output = new byte[uncompressedSize];
-        Decompressor.Decompress(CompressionCodec.Lz4, data[4..], output);
-        return output;
+        var span = output.GetSpan(uncompressedSize);
+        Decompressor.Decompress(CompressionCodec.Lz4, data[4..], span[..uncompressedSize]);
+        output.Advance(uncompressedSize);
     }
 
     /// <summary>
     /// Avro Snappy = Snappy block + 4-byte big-endian CRC32C of uncompressed data.
     /// </summary>
-    private static byte[] CompressSnappy(ReadOnlySpan<byte> data)
+    private static void CompressSnappy(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
+        // Compress directly into the output buffer
         int maxLen = Compressor.GetMaxCompressedLength(CompressionCodec.Snappy, data.Length);
-        // Compress into a temporary buffer, then allocate exact-sized result
-        Span<byte> temp = maxLen <= 4096 ? stackalloc byte[maxLen] : new byte[maxLen];
-        int written = Compressor.Compress(CompressionCodec.Snappy, data, temp);
+        var span = output.GetSpan(maxLen + 4); // room for compressed + CRC
+        int written = Compressor.Compress(CompressionCodec.Snappy, data, span);
 
-        // Allocate exact-sized output: compressed data + 4-byte CRC
-        var result = new byte[written + 4];
-        temp[..written].CopyTo(result);
+        // Append CRC32C of uncompressed data
         uint crc = Crc32C(data);
-        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(written), crc);
-        return result;
+        BinaryPrimitives.WriteUInt32BigEndian(span[written..], crc);
+        output.Advance(written + 4);
     }
 
-    private static byte[] DecompressSnappy(ReadOnlySpan<byte> data)
+    private static void DecompressSnappy(ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         // Last 4 bytes are CRC32C (big-endian) of the uncompressed data
         if (data.Length < 4)
@@ -125,16 +156,15 @@ internal static class AvroCompression
         // Determine uncompressed size from Snappy header
         int uncompressedSize = checked((int)Decompressor.GetDecompressedLength(
             CompressionCodec.Snappy, compressedData));
-        var output = new byte[uncompressedSize];
-        Decompressor.Decompress(CompressionCodec.Snappy, compressedData, output);
+        var span = output.GetSpan(uncompressedSize);
+        Decompressor.Decompress(CompressionCodec.Snappy, compressedData, span[..uncompressedSize]);
+        output.Advance(uncompressedSize);
 
         // Verify CRC
-        uint actualCrc = Crc32C(output);
+        uint actualCrc = Crc32C(span[..uncompressedSize]);
         if (actualCrc != expectedCrc)
             throw new InvalidDataException(
                 $"Snappy CRC32C mismatch: expected 0x{expectedCrc:X8}, got 0x{actualCrc:X8}.");
-
-        return output;
     }
 
     private static uint Crc32C(ReadOnlySpan<byte> data)
