@@ -39,6 +39,13 @@ public sealed class ParquetReadOptions
     public ByteArrayOutputKind ByteArrayOutput { get; init; } = ByteArrayOutputKind.Default;
 
     /// <summary>
+    /// Maximum number of rows per <see cref="Apache.Arrow.RecordBatch"/>. When set, row groups
+    /// larger than this limit are split across multiple batches. When <see langword="null"/>
+    /// (the default), each row group produces exactly one batch.
+    /// </summary>
+    public int? BatchSize { get; init; }
+
+    /// <summary>
     /// Shorthand for <c>ByteArrayOutput == ByteArrayOutputKind.ViewType</c>.
     /// When set to <see langword="true"/>, sets <see cref="ByteArrayOutput"/> to
     /// <see cref="ByteArrayOutputKind.ViewType"/>; setting to <see langword="false"/>

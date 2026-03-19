@@ -1510,6 +1510,83 @@ internal sealed class ColumnBuildState : IDisposable
         return _dataBuffer!.Build();
     }
 
+    /// <summary>
+    /// Trims the accumulated state so that only the first <paramref name="maxRows"/> rows
+    /// are retained. For flat columns (MaxRepLevel == 0) this limits def levels to
+    /// <paramref name="maxRows"/> entries. For repeated columns it scans rep levels to
+    /// find the value cutoff corresponding to <paramref name="maxRows"/> row boundaries.
+    /// </summary>
+    internal void LimitToRows(int maxRows)
+    {
+        if (MaxRepLevel > 0)
+        {
+            // Repeated: find value count for maxRows rows by counting rep-level-zero entries.
+            var reps = _repLevels.AsSpan(0, _repLevelCount);
+            int rowsSeen = 0;
+            int valueCutoff = 0;
+            for (int i = 0; i < reps.Length; i++)
+            {
+                if (reps[i] == 0)
+                    rowsSeen++;
+                if (rowsSeen > maxRows)
+                    break;
+                valueCutoff = i + 1;
+            }
+            _repLevelCount = valueCutoff;
+            LimitValues(valueCutoff);
+        }
+        else
+        {
+            LimitValues(maxRows);
+        }
+    }
+
+    /// <summary>
+    /// Trims def levels and value counters to exactly <paramref name="count"/> entries.
+    /// </summary>
+    private void LimitValues(int count)
+    {
+        if (_defLevels != null && _defLevelCount > count)
+        {
+            // Nullable: recount non-nulls from the first 'count' def levels.
+            int nonNulls = 0;
+            for (int i = 0; i < count; i++)
+            {
+                if (_defLevels[i] == MaxDefLevel)
+                    nonNulls++;
+            }
+            _defLevelCount = count;
+            _valueCount = nonNulls;
+            AdjustValueCounters(nonNulls);
+        }
+        else if (_defLevels == null && _valueCount > count)
+        {
+            // Non-nullable: value count == row count.
+            _valueCount = count;
+            AdjustValueCounters(count);
+        }
+    }
+
+    private void AdjustValueCounters(int newValueCount)
+    {
+        switch (_physicalType)
+        {
+            case PhysicalType.Boolean:
+                _boolBitOffset = newValueCount;
+                break;
+            case PhysicalType.ByteArray:
+                if (_byteArrayOutput == ByteArrayOutputKind.ViewType)
+                    _viewsCount = newValueCount;
+                else
+                    _offsetsCount = newValueCount + 1;
+                // _dataByteOffset is left unchanged — extra data bytes are harmless.
+                break;
+            default:
+                _valueByteOffset = newValueCount * _elementSize;
+                break;
+        }
+    }
+
     public void Dispose()
     {
         if (_defLevels != null)
@@ -1534,7 +1611,7 @@ internal sealed class ColumnBuildState : IDisposable
 /// <summary>
 /// Factory to construct the correct Arrow array type from <see cref="ArrayData"/>.
 /// </summary>
-file static class ArrowArrayFactory
+internal static class ArrowArrayFactory
 {
     public static IArrowArray BuildArray(ArrayData data) =>
         data.DataType switch

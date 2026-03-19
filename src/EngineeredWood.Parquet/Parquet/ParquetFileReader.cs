@@ -164,8 +164,149 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
         var metadata = await ReadMetadataAsync(cancellationToken).ConfigureAwait(false);
 
         for (int i = 0; i < metadata.RowGroups.Count; i++)
-            yield return await ReadRowGroupAsync(i, columnNames, cancellationToken)
+        {
+            if (_options.BatchSize is > 0)
+            {
+                await foreach (var batch in ReadRowGroupBatchesAsync(i, columnNames, cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    yield return batch;
+                }
+            }
+            else
+            {
+                yield return await ReadRowGroupAsync(i, columnNames, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams a single row group as a sequence of <see cref="RecordBatch"/> instances, each
+    /// containing at most <see cref="ParquetReadOptions.BatchSize"/> rows. When
+    /// <see cref="ParquetReadOptions.BatchSize"/> is null, yields a single batch containing
+    /// the entire row group.
+    /// </summary>
+    /// <param name="rowGroupIndex">Zero-based index of the row group to read.</param>
+    /// <param name="columnNames">
+    /// Optional list of column names to read. If null, reads all columns.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An async enumerable of RecordBatches.</returns>
+    public async IAsyncEnumerable<RecordBatch> ReadRowGroupBatchesAsync(
+        int rowGroupIndex,
+        IReadOnlyList<string>? columnNames = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
+    {
+        int? batchSize = _options.BatchSize;
+
+        // When no batch size is set, or the row group fits in one batch, fall back
+        // to the standard single-batch path.
+        if (batchSize is not > 0)
+        {
+            yield return await ReadRowGroupAsync(rowGroupIndex, columnNames, cancellationToken)
                 .ConfigureAwait(false);
+            yield break;
+        }
+
+        var ctx = await PrepareRowGroupAsync(rowGroupIndex, columnNames, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (ctx.RowCount <= batchSize.Value)
+        {
+            // Row group fits in a single batch — use the optimised single-pass path.
+            var buffers = await _file.ReadRangesAsync(ctx.Ranges, cancellationToken)
+                .ConfigureAwait(false);
+            try
+            {
+                var results = new ColumnResult[ctx.Count];
+                Parallel.For(0, ctx.Count, i =>
+                {
+                    results[i] = ColumnChunkReader.ReadColumn(
+                        buffers[i].Memory.Span, ctx.Columns[i],
+                        ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
+                        ctx.HasNestedColumns);
+                });
+                yield return AssembleRecordBatch(ctx, results);
+            }
+            finally
+            {
+                for (int i = 0; i < buffers.Count; i++)
+                    buffers[i].Dispose();
+            }
+            yield break;
+        }
+
+        // Multi-batch path: read all column chunks, build page maps, yield batches.
+        var columnBuffers = await _file.ReadRangesAsync(ctx.Ranges, cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            // Build page maps for all columns.
+            var pageMaps = new ColumnPageMap[ctx.Count];
+            Parallel.For(0, ctx.Count, i =>
+            {
+                pageMaps[i] = PageMapBuilder.Build(
+                    columnBuffers[i].Memory.Span,
+                    ctx.Columns[i],
+                    ctx.Chunks[i].MetaData!);
+            });
+
+            // Yield batches by walking through the row group in BatchSize increments.
+            int rowsEmitted = 0;
+            while (rowsEmitted < ctx.RowCount)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int batchStartRow = rowsEmitted;
+                int actualBatchRows = Math.Min(batchSize.Value, ctx.RowCount - batchStartRow);
+                int lastRow = batchStartRow + actualBatchRows - 1;
+
+                var results = new ColumnResult[ctx.Count];
+                Parallel.For(0, ctx.Count, i =>
+                {
+                    int startPage = pageMaps[i].FindPageForRow(batchStartRow);
+                    int endPage = pageMaps[i].FindPageForRow(lastRow);
+                    int pageStartRow = pageMaps[i].CumulativeRows[startPage];
+
+                    var fullResult = ColumnChunkReader.ReadColumnBatch(
+                        columnBuffers[i].Memory.Span,
+                        ctx.Columns[i],
+                        ctx.Chunks[i].MetaData!,
+                        pageMaps[i],
+                        startPage, endPage,
+                        ctx.LeafArrowFields[i],
+                        ctx.HasNestedColumns);
+
+                    // Slice the array to extract exactly the target row range.
+                    // Pages may extend before batchStartRow and/or after lastRow.
+                    int skipRows = batchStartRow - pageStartRow;
+                    if (skipRows > 0 || fullResult.Array.Length > actualBatchRows)
+                    {
+                        var slicedData = fullResult.Array.Data.Slice(skipRows, actualBatchRows);
+                        var slicedArray = Data.ArrowArrayFactory.BuildArray(slicedData);
+                        results[i] = new ColumnResult(slicedArray,
+                            fullResult.DefinitionLevels, fullResult.RepetitionLevels);
+                    }
+                    else
+                    {
+                        results[i] = fullResult;
+                    }
+                });
+
+                yield return AssembleRecordBatch(
+                    ctx with { RowCount = actualBatchRows }, results);
+
+                rowsEmitted += actualBatchRows;
+            }
+        }
+        finally
+        {
+            for (int i = 0; i < columnBuffers.Count; i++)
+                columnBuffers[i].Dispose();
+        }
     }
 
     /// <summary>

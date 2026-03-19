@@ -138,6 +138,229 @@ internal static class ColumnChunkReader
         return new ColumnResult(array, defLevels, repLevels);
     }
 
+    /// <summary>
+    /// Decodes a contiguous range of pages from a pre-scanned <see cref="ColumnPageMap"/>
+    /// and returns the resulting Arrow array. Only the pages in
+    /// <c>[startPage..endPage]</c> (inclusive) are decompressed and decoded.
+    /// </summary>
+    /// <param name="data">Raw bytes of the column chunk.</param>
+    /// <param name="column">Column descriptor (type, levels, schema info).</param>
+    /// <param name="columnMeta">Column chunk metadata (codec, num_values, etc.).</param>
+    /// <param name="pageMap">Pre-scanned page map for this column chunk.</param>
+    /// <param name="startPage">First page index (inclusive) to decode.</param>
+    /// <param name="endPage">Last page index (inclusive) to decode.</param>
+    /// <param name="batchRowCount">Number of rows in the resulting batch.</param>
+    /// <param name="arrowField">Arrow field for this column.</param>
+    /// <param name="preserveDefLevels">
+    /// If true, raw definition levels are returned for nested assembly.
+    /// </param>
+    public static ColumnResult ReadColumnBatch(
+        ReadOnlySpan<byte> data,
+        ColumnDescriptor column,
+        ColumnMetaData columnMeta,
+        ColumnPageMap pageMap,
+        int startPage,
+        int endPage,
+        Field arrowField,
+        bool preserveDefLevels = false)
+    {
+        bool isRepeated = column.MaxRepetitionLevel > 0;
+
+        int pageNumValues = pageMap.CumulativeValues[endPage + 1] - pageMap.CumulativeValues[startPage];
+        int pageRowCount = pageMap.CumulativeRows[endPage + 1] - pageMap.CumulativeRows[startPage];
+        int capacity = isRepeated ? pageNumValues : pageRowCount;
+
+        var byteArrayOutput = arrowField.DataType switch
+        {
+            StringViewType or BinaryViewType => ByteArrayOutputKind.ViewType,
+            LargeStringType or LargeBinaryType => ByteArrayOutputKind.LargeOffsets,
+            _ => ByteArrayOutputKind.Default,
+        };
+
+        using var state = new ColumnBuildState(
+            column.PhysicalType, column.MaxDefinitionLevel, column.MaxRepetitionLevel, capacity,
+            byteArrayOutput);
+
+        for (int p = startPage; p <= endPage; p++)
+        {
+            var entry = pageMap.Pages[p];
+            var pageData = data.Slice(entry.Offset, entry.CompressedSize);
+
+            if (entry.Type == PageType.DataPage)
+            {
+                ReadDataPageV1FromEntry(entry, pageData, column, columnMeta, pageMap.Dictionary, state);
+            }
+            else if (entry.Type == PageType.DataPageV2)
+            {
+                ReadDataPageV2FromEntry(entry, pageData, column, columnMeta, pageMap.Dictionary, state);
+            }
+        }
+
+        int[]? defLevels = null;
+        if ((preserveDefLevels || isRepeated) && column.MaxDefinitionLevel > 0)
+        {
+            var src = state.DefLevelSpan;
+            defLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                defLevels[i] = src[i];
+        }
+
+        int[]? repLevels = null;
+        if (isRepeated)
+        {
+            var src = state.RepLevelSpan;
+            repLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                repLevels[i] = src[i];
+        }
+
+        IArrowArray array;
+        if (isRepeated)
+        {
+            array = ArrowArrayBuilder.BuildDense(state, arrowField, pageNumValues);
+        }
+        else
+        {
+            array = ArrowArrayBuilder.Build(state, arrowField, pageRowCount);
+        }
+
+        return new ColumnResult(array, defLevels, repLevels);
+    }
+
+    /// <summary>
+    /// Decodes a V1 data page using metadata from a <see cref="PageMapEntry"/>.
+    /// </summary>
+    private static void ReadDataPageV1FromEntry(
+        PageMapEntry entry,
+        ReadOnlySpan<byte> compressedData,
+        ColumnDescriptor column,
+        ColumnMetaData columnMeta,
+        DictionaryDecoder? dictionary,
+        ColumnBuildState state)
+    {
+        int numValues = entry.NumValues;
+
+        ReadOnlySpan<byte> pageData;
+        byte[]? decompressedBuffer = null;
+
+        if (columnMeta.Codec == CompressionCodec.Uncompressed)
+        {
+            pageData = compressedData;
+        }
+        else
+        {
+            int size = entry.UncompressedSize;
+            decompressedBuffer = ArrayPool<byte>.Shared.Rent(size);
+            Decompressor.Decompress(columnMeta.Codec, compressedData, decompressedBuffer);
+            pageData = decompressedBuffer.AsSpan(0, size);
+        }
+
+        try
+        {
+            int offset = 0;
+            var repEncoding = entry.RepetitionLevelEncoding;
+            var defEncoding = entry.DefinitionLevelEncoding;
+
+            if (column.MaxRepetitionLevel > 0)
+            {
+                var repDest = state.ReserveRepLevels(numValues);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxRepetitionLevel, numValues, repDest, out _, repEncoding);
+            }
+
+            int nonNullCount;
+            if (column.MaxDefinitionLevel > 0)
+            {
+                var defDest = state.ReserveDefLevels(numValues);
+                offset += LevelDecoder.DecodeV1(pageData.Slice(offset), column.MaxDefinitionLevel, numValues, defDest, out nonNullCount, defEncoding);
+            }
+            else
+            {
+                nonNullCount = numValues;
+            }
+
+            var valueData = pageData.Slice(offset);
+            DecodeValues(valueData, entry.Encoding, column, dictionary, nonNullCount, state);
+        }
+        finally
+        {
+            if (decompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(decompressedBuffer);
+        }
+    }
+
+    /// <summary>
+    /// Decodes a V2 data page using metadata from a <see cref="PageMapEntry"/>.
+    /// </summary>
+    private static void ReadDataPageV2FromEntry(
+        PageMapEntry entry,
+        ReadOnlySpan<byte> rawData,
+        ColumnDescriptor column,
+        ColumnMetaData columnMeta,
+        DictionaryDecoder? dictionary,
+        ColumnBuildState state)
+    {
+        int numValues = entry.NumValues;
+        int offset = 0;
+
+        if (column.MaxRepetitionLevel > 0)
+        {
+            var repDest = state.ReserveRepLevels(numValues);
+            LevelDecoder.DecodeV2(
+                rawData.Slice(offset, entry.RepetitionLevelsByteLength),
+                column.MaxRepetitionLevel, numValues, repDest, out _);
+        }
+        else if (entry.RepetitionLevelsByteLength > 0)
+        {
+            var tempRep = numValues <= 4096 ? stackalloc byte[numValues] : new byte[numValues];
+            LevelDecoder.DecodeV2(
+                rawData.Slice(offset, entry.RepetitionLevelsByteLength),
+                column.MaxRepetitionLevel, numValues, tempRep, out _);
+        }
+        offset += entry.RepetitionLevelsByteLength;
+
+        if (column.MaxDefinitionLevel > 0)
+        {
+            var defDest = state.ReserveDefLevels(numValues);
+            LevelDecoder.DecodeV2(
+                rawData.Slice(offset, entry.DefinitionLevelsByteLength),
+                column.MaxDefinitionLevel, numValues, defDest, out _);
+        }
+        offset += entry.DefinitionLevelsByteLength;
+
+        int nonNullCount = numValues - entry.NumNulls;
+
+        var valuesCompressed = rawData.Slice(offset);
+
+        if (nonNullCount == 0 || valuesCompressed.IsEmpty)
+            return;
+
+        ReadOnlySpan<byte> valueData;
+        byte[]? decompressedBuffer = null;
+
+        if (!entry.IsCompressed || columnMeta.Codec == CompressionCodec.Uncompressed)
+        {
+            valueData = valuesCompressed;
+        }
+        else
+        {
+            int levelsSize = entry.RepetitionLevelsByteLength + entry.DefinitionLevelsByteLength;
+            int uncompressedValuesSize = entry.UncompressedSize - levelsSize;
+            decompressedBuffer = ArrayPool<byte>.Shared.Rent(uncompressedValuesSize);
+            Decompressor.Decompress(columnMeta.Codec, valuesCompressed, decompressedBuffer);
+            valueData = decompressedBuffer.AsSpan(0, uncompressedValuesSize);
+        }
+
+        try
+        {
+            DecodeValues(valueData, entry.Encoding, column, dictionary, nonNullCount, state);
+        }
+        finally
+        {
+            if (decompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(decompressedBuffer);
+        }
+    }
+
     private static DictionaryDecoder ReadDictionaryPage(
         PageHeader header,
         ReadOnlySpan<byte> compressedData,
