@@ -109,37 +109,28 @@ internal static class ArrowArrayBuilder
         int nonNullCount = state.ValueCount;
 
         int bitmapBytes = (numValues + 7) / 8;
-        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
-        try
-        {
-            bitmapOwner.Memory.Span.Slice(0, bitmapBytes).Clear();
-            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
+        using var bitmapBuf = new NativeBuffer<byte>(bitmapBytes);
+        var bitmap = bitmapBuf.ByteSpan;
 
-            // In-place reverse scatter: reuse the dense buffer, walking right-to-left
-            // so each value moves rightward (read index always <= write index).
-            var values = state.GetWritableValueSpan<T>();
-            int readIdx = nonNullCount - 1;
-            for (int i = numValues - 1; i >= 0 && readIdx >= 0; i--)
+        // In-place reverse scatter: reuse the dense buffer, walking right-to-left
+        // so each value moves rightward (read index always <= write index).
+        var values = state.GetWritableValueSpan<T>();
+        int readIdx = nonNullCount - 1;
+        for (int i = numValues - 1; i >= 0 && readIdx >= 0; i--)
+        {
+            if (defLevels[i] == state.MaxDefLevel)
             {
-                if (defLevels[i] == state.MaxDefLevel)
-                {
-                    values[i] = values[readIdx--];
-                    bitmap[i >> 3] |= (byte)(1 << (i & 7));
-                }
+                values[i] = values[readIdx--];
+                bitmap[i >> 3] |= (byte)(1 << (i & 7));
             }
-
-            var valueArrow = state.BuildValueBuffer();
-            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
-            bitmapOwner = null;
-
-            var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
-                new[] { bitmapArrow, valueArrow });
-            return ArrowArrayFactory.BuildArray(data);
         }
-        finally
-        {
-            bitmapOwner?.Dispose();
-        }
+
+        var valueArrow = state.BuildValueBuffer();
+        var bitmapArrow = bitmapBuf.Build();
+
+        var data = new ArrayData(arrowType, numValues, nullCount, offset: 0,
+            new[] { bitmapArrow, valueArrow });
+        return ArrowArrayFactory.BuildArray(data);
     }
 
     private static IArrowArray BuildDenseNarrowIntArray<TNarrow>(ColumnBuildState state, IArrowType arrowType, int numValues)
@@ -350,36 +341,27 @@ internal static class ArrowArrayBuilder
         int nullCount = rowCount - nonNullCount;
         var defLevels = state.DefLevelSpan;
 
-        // Bitmap: use pooled managed array instead of a native alloc
         int bitmapBytes = (rowCount + 7) / 8;
-        IMemoryOwner<byte>? bitmapOwner = MemoryPool<byte>.Shared.Rent(bitmapBytes);
-        try
+        using var bitmapBuf = new NativeBuffer<byte>(bitmapBytes);
+        var bitmap = bitmapBuf.ByteSpan;
+
+        // Build bitmap using SIMD, then scatter values using the bitmap
+        BuildBitmapFromDefLevels(defLevels, bitmap, rowCount, (byte)state.MaxDefLevel);
+
+        var values = state.GetWritableValueSpan<T>();
+        int readIdx = nonNullCount - 1;
+        for (int i = rowCount - 1; i >= 0 && readIdx >= 0; i--)
         {
-            var bitmap = bitmapOwner.Memory.Span.Slice(0, bitmapBytes);
-
-            // Build bitmap using SIMD, then scatter values using the bitmap
-            BuildBitmapFromDefLevels(defLevels, bitmap, rowCount, (byte)state.MaxDefLevel);
-
-            var values = state.GetWritableValueSpan<T>();
-            int readIdx = nonNullCount - 1;
-            for (int i = rowCount - 1; i >= 0 && readIdx >= 0; i--)
-            {
-                if ((bitmap[i >> 3] & (1 << (i & 7))) != 0)
-                    values[i] = values[readIdx--];
-            }
-
-            var valueArrow = state.BuildValueBuffer();
-            var bitmapArrow = NativeAllocator.CreateBuffer(bitmapOwner);
-            bitmapOwner = null;
-
-            var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
-                new[] { bitmapArrow, valueArrow });
-            return ArrowArrayFactory.BuildArray(data);
+            if ((bitmap[i >> 3] & (1 << (i & 7))) != 0)
+                values[i] = values[readIdx--];
         }
-        finally
-        {
-            bitmapOwner?.Dispose();
-        }
+
+        var valueArrow = state.BuildValueBuffer();
+        var bitmapArrow = bitmapBuf.Build();
+
+        var data = new ArrayData(arrowType, rowCount, nullCount, offset: 0,
+            new[] { bitmapArrow, valueArrow });
+        return ArrowArrayFactory.BuildArray(data);
     }
 
     /// <summary>
