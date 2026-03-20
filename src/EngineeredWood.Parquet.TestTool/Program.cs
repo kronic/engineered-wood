@@ -26,10 +26,14 @@ static int PrintUsage()
         Usage:
           ew-test-tool create_test_file <path> --size <bytes>
             Creates a Parquet file with a single row group of approximately <bytes>
-            uncompressed data using random values that resist compression.
+            uncompressed data. Includes columns exercising every encoding path
+            (DeltaBinaryPacked, ByteStreamSplit, Rle, DeltaLengthByteArray,
+            DeltaByteArray, RleDictionary, Plain) with monotonic sequences for
+            validation. Supports KB/MB/GB suffixes.
 
-          ew-test-tool read_test_file <path> [--batch-rows <n>] [--batch-bytes <n>]
+          ew-test-tool read_test_file <path> [--batch-rows <n>] [--batch-bytes <n>] [--validate]
             Reads the file one RecordBatch at a time and reports peak memory.
+            --validate checks every encoding-exercise column for correct values.
         """);
     return 1;
 }
@@ -49,36 +53,70 @@ static async Task<int> CreateTestFile(string[] args)
     string path = args[0];
     long targetBytes = ParseSize(args[2]);
 
-    // Schema: fixed-width columns that are easy to bulk-fill and don't
-    // run into .NET's 2 GB single-array limit.
-    //   id        Int64   (8 bytes)
-    //   v0..v5    Int64   (8 bytes each, 6 columns)
-    //   flag      Int32   (4 bytes)
-    // Approximate row size: 7×8 + 4 = 60 bytes
-    const int numInt64Cols = 7; // id + v0..v5
-    const int approxRowBytes = numInt64Cols * 8 + 4;
+    // Schema designed to exercise every distinct encoding/page-format combination
+    // the writer produces, while keeping values cheaply validatable (monotonic
+    // sequences that can be checked with a running counter).
+    //
+    // Encoding path              Column                Arrow type          Parquet encoding (V2)
+    // ──────────────────────────  ────────────────────  ──────────────────  ──────────────────────────
+    // DeltaBinaryPacked          id          (req)      Int64               DeltaBinaryPacked
+    // DeltaBinaryPacked          seq_i32     (req)      Int32               DeltaBinaryPacked
+    // DeltaBinaryPacked+null     seq_i64n    (opt)      Int64?              DeltaBinaryPacked + def levels
+    // ByteStreamSplit             seq_f32     (req)      Float               ByteStreamSplit
+    // ByteStreamSplit             seq_f64     (req)      Double              ByteStreamSplit
+    // RLE Boolean                 seq_bool    (req)      Boolean             Rle
+    // DeltaLengthByteArray        seq_str     (req)      String              DeltaLengthByteArray
+    // DeltaByteArray (binary)     seq_bin     (req)      Binary              DeltaByteArray
+    // RleDictionary               seq_dict    (req)      String (dict)       RleDictionary
+    // FixedLenByteArray (plain)   seq_fsb     (req)      FixedSizeBinary(4)  Plain
+    //
+    // The "bulk" columns (id + 5 random Int64s) provide the majority of the file
+    // size. The encoding-exercise columns are small per-row but ensure that every
+    // decode path is split across batch boundaries.
+
+    // Approximate row size for the bulk portion (determines row count).
+    const int numBulkInt64 = 6; // id + v0..v4
+    const int approxRowBytes = numBulkInt64 * 8 + 4 + 4 + 8 + 8 + 1 + 20 + 20 + 10 + 4;
+    // ≈ 48 (bulk Int64) + 4 (Int32) + 4 (Float) + 8 (Double) + 8 (Int64?) + 1 (Bool) + ~54 (strings/binary/fsb) ≈ 127
     int totalRows = (int)Math.Min(targetBytes / approxRowBytes, int.MaxValue);
+    if (totalRows < 1) totalRows = 1;
 
     Console.WriteLine($"Target size:  {FormatBytes(targetBytes)}");
     Console.WriteLine($"Rows:         {totalRows:N0}");
     Console.WriteLine($"Output:       {path}");
 
-    var schemaBuilder = new Apache.Arrow.Schema.Builder()
-        .Field(new Field("id", Int64Type.Default, nullable: false));
-    for (int c = 0; c < numInt64Cols - 1; c++)
-        schemaBuilder.Field(new Field($"v{c}", Int64Type.Default, nullable: false));
-    schemaBuilder.Field(new Field("flag", Int32Type.Default, nullable: false));
-    var schema = schemaBuilder.Build();
+    var schema = new Apache.Arrow.Schema.Builder()
+        // Bulk columns (DeltaBinaryPacked, provide file size)
+        .Field(new Field("id", Int64Type.Default, nullable: false))
+        .Field(new Field("v0", Int64Type.Default, nullable: false))
+        .Field(new Field("v1", Int64Type.Default, nullable: false))
+        .Field(new Field("v2", Int64Type.Default, nullable: false))
+        .Field(new Field("v3", Int64Type.Default, nullable: false))
+        .Field(new Field("v4", Int64Type.Default, nullable: false))
+        // Encoding-exercise columns (monotonic sequences)
+        .Field(new Field("seq_i32", Int32Type.Default, nullable: false))
+        .Field(new Field("seq_i64n", Int64Type.Default, nullable: true))
+        .Field(new Field("seq_f32", FloatType.Default, nullable: false))
+        .Field(new Field("seq_f64", DoubleType.Default, nullable: false))
+        .Field(new Field("seq_bool", BooleanType.Default, nullable: false))
+        .Field(new Field("seq_str", StringType.Default, nullable: false))
+        .Field(new Field("seq_bin", BinaryType.Default, nullable: false))
+        .Field(new Field("seq_dict", StringType.Default, nullable: false))
+        .Field(new Field("seq_fsb", new FixedSizeBinaryType(4), nullable: false))
+        .Build();
 
-    // Build the entire batch in memory so it gets written as a single row group.
-    // This uses RAM proportional to the target size, but the purpose of this tool
-    // is to produce files with one large row group for memory-consumption testing.
     var writeOptions = new ParquetWriteOptions
     {
         Compression = CompressionCodec.Snappy,
         RowGroupMaxRows = totalRows,
-        DataPageSize = 1024 * 1024, // 1 MB pages
-        DictionaryEnabled = false,  // random data won't benefit
+        DataPageSize = 64 * 1024, // 64 KB pages → many pages even for small test files
+        DictionaryEnabled = true,
+        // seq_bin uses DeltaByteArray; seq_str uses DeltaLengthByteArray (default).
+        // Override seq_bin's encoding via ColumnEncodings.
+        ColumnEncodings = new Dictionary<string, ByteArrayEncoding>
+        {
+            ["seq_bin"] = ByteArrayEncoding.DeltaByteArray,
+        },
     };
 
     var sw = Stopwatch.StartNew();
@@ -104,18 +142,16 @@ static async Task<int> CreateTestFile(string[] args)
 
 static RecordBatch GenerateRandomBatch(Apache.Arrow.Schema schema, int rowCount, long startId)
 {
-    // Build arrays from bulk-filled random buffers for speed.
     var arrays = new List<IArrowArray>();
 
-    // --- id (sequential Int64) ---
+    // --- id (sequential Int64, also serves as the master row counter) ---
     var ids = new long[rowCount];
     for (int i = 0; i < rowCount; i++)
         ids[i] = startId + i;
     arrays.Add(new Int64Array.Builder().AppendRange(ids).Build());
 
-    // --- v0..v5 (random Int64 columns) ---
-    int int64ColCount = schema.FieldsList.Count(f => f.DataType is Int64Type) - 1; // minus id
-    for (int c = 0; c < int64ColCount; c++)
+    // --- v0..v4 (random Int64 bulk columns) ---
+    for (int c = 0; c < 5; c++)
     {
         var values = new long[rowCount];
         RandomNumberGenerator.Fill(
@@ -123,11 +159,86 @@ static RecordBatch GenerateRandomBatch(Apache.Arrow.Schema schema, int rowCount,
         arrays.Add(new Int64Array.Builder().AppendRange(values).Build());
     }
 
-    // --- flag (random Int32) ---
-    var ints = new int[rowCount];
-    RandomNumberGenerator.Fill(
-        System.Runtime.InteropServices.MemoryMarshal.AsBytes(ints.AsSpan()));
-    arrays.Add(new Int32Array.Builder().AppendRange(ints).Build());
+    // --- seq_i32: Int32, monotonic (DeltaBinaryPacked) ---
+    {
+        var b = new Int32Array.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append(i);
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_i64n: Int64?, monotonic with every 7th null (DeltaBinaryPacked + def levels) ---
+    {
+        var b = new Int64Array.Builder();
+        for (int i = 0; i < rowCount; i++)
+        {
+            if (i % 7 == 3)
+                b.AppendNull();
+            else
+                b.Append(i);
+        }
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_f32: Float, monotonic (ByteStreamSplit) ---
+    {
+        var b = new FloatArray.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append((float)i);
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_f64: Double, monotonic (ByteStreamSplit) ---
+    {
+        var b = new DoubleArray.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append((double)i);
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_bool: Boolean, alternating (Rle) ---
+    {
+        var b = new BooleanArray.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append(i % 2 == 0);
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_str: String, monotonic formatted (DeltaLengthByteArray) ---
+    {
+        var b = new StringArray.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append(i.ToString());
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_bin: Binary, monotonic 4-byte LE (DeltaByteArray via ColumnEncodings override) ---
+    {
+        var b = new BinaryArray.Builder();
+        Span<byte> buf = stackalloc byte[4];
+        for (int i = 0; i < rowCount; i++)
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf, i);
+            b.Append(buf);
+        }
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_dict: String, low-cardinality (RleDictionary — writer auto-dicts) ---
+    {
+        string[] categories = ["alpha", "beta", "gamma", "delta", "epsilon",
+                               "zeta", "eta", "theta", "iota", "kappa"];
+        var b = new StringArray.Builder();
+        for (int i = 0; i < rowCount; i++) b.Append(categories[i % categories.Length]);
+        arrays.Add(b.Build());
+    }
+
+    // --- seq_fsb: FixedSizeBinary(4), monotonic 4-byte LE (Plain for FLBA) ---
+    {
+        byte[] fsbData = new byte[rowCount * 4];
+        for (int i = 0; i < rowCount; i++)
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                fsbData.AsSpan(i * 4, 4), i);
+        var fsbType = new FixedSizeBinaryType(4);
+        var arrayData = new ArrayData(fsbType, rowCount, nullCount: 0, offset: 0,
+            [ArrowBuffer.Empty, new ArrowBuffer(fsbData)]);
+        arrays.Add(new FixedSizeBinaryArray(arrayData));
+    }
 
     return new RecordBatch(schema, arrays, rowCount);
 }
@@ -147,13 +258,16 @@ static async Task<int> ReadTestFile(string[] args)
     string path = args[0];
     int? batchRows = null;
     long? batchBytes = null;
+    bool validate = false;
 
-    for (int i = 1; i < args.Length - 1; i++)
+    for (int i = 1; i < args.Length; i++)
     {
-        if (args[i] == "--batch-rows")
+        if (args[i] == "--batch-rows" && i + 1 < args.Length)
             batchRows = int.Parse(args[++i]);
-        else if (args[i] == "--batch-bytes")
+        else if (args[i] == "--batch-bytes" && i + 1 < args.Length)
             batchBytes = ParseSize(args[++i]);
+        else if (args[i] == "--validate")
+            validate = true;
     }
 
     if (batchRows is null && batchBytes is null)
@@ -213,6 +327,12 @@ static async Task<int> ReadTestFile(string[] args)
                 $"Δ {FormatBytes(delta),10}");
         }
 
+        if (validate)
+        {
+            int batchStartRow = (int)(totalRowsRead - batch.Length);
+            ValidateBatch(batch, batchStartRow);
+        }
+
         // Dispose arrays explicitly to free native buffers promptly.
         for (int c = 0; c < batch.ColumnCount; c++)
             batch.Column(c).Dispose();
@@ -223,6 +343,8 @@ static async Task<int> ReadTestFile(string[] args)
     long finalMemory = GC.GetTotalMemory(forceFullCollection: true);
 
     Console.WriteLine();
+    if (validate)
+        Console.WriteLine($"Validation:   PASSED ({totalRowsRead:N0} rows)");
     Console.WriteLine($"Batches read: {batchCount:N0}");
     Console.WriteLine($"Total rows:   {totalRowsRead:N0}");
     Console.WriteLine($"Elapsed:      {sw.Elapsed.TotalSeconds:F1}s");
@@ -231,6 +353,136 @@ static async Task<int> ReadTestFile(string[] args)
     Console.WriteLine($"Peak Δ:       {FormatBytes(peakDelta)}");
     Console.WriteLine($"Final mem:    {FormatBytes(finalMemory)}");
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+static void ValidateBatch(RecordBatch batch, int globalRowStart)
+{
+    var schema = batch.Schema;
+    int len = (int)batch.Length;
+
+    // Find columns by name — gracefully skip if the file wasn't created by this tool.
+    int Idx(string name) => schema.GetFieldIndex(name);
+
+    // seq_i32: Int32, monotonic (DeltaBinaryPacked)
+    if (Idx("seq_i32") >= 0)
+    {
+        var col = (Int32Array)batch.Column(Idx("seq_i32"));
+        for (int i = 0; i < len; i++)
+            Check(col.GetValue(i) == globalRowStart + i,
+                $"seq_i32[{globalRowStart + i}]: expected {globalRowStart + i}, got {col.GetValue(i)}");
+    }
+
+    // seq_i64n: Int64?, monotonic with null at i%7==3 (DeltaBinaryPacked + def levels)
+    if (Idx("seq_i64n") >= 0)
+    {
+        var col = (Int64Array)batch.Column(Idx("seq_i64n"));
+        for (int i = 0; i < len; i++)
+        {
+            int g = globalRowStart + i;
+            if (g % 7 == 3)
+                Check(col.IsNull(i), $"seq_i64n[{g}]: expected null");
+            else
+                Check(col.GetValue(i) == g, $"seq_i64n[{g}]: expected {g}, got {col.GetValue(i)}");
+        }
+    }
+
+    // seq_f32: Float, monotonic (ByteStreamSplit)
+    if (Idx("seq_f32") >= 0)
+    {
+        var col = (FloatArray)batch.Column(Idx("seq_f32"));
+        for (int i = 0; i < len; i++)
+            Check(col.GetValue(i) == (float)(globalRowStart + i),
+                $"seq_f32[{globalRowStart + i}]: expected {(float)(globalRowStart + i)}, got {col.GetValue(i)}");
+    }
+
+    // seq_f64: Double, monotonic (ByteStreamSplit)
+    if (Idx("seq_f64") >= 0)
+    {
+        var col = (DoubleArray)batch.Column(Idx("seq_f64"));
+        for (int i = 0; i < len; i++)
+            Check(col.GetValue(i) == (double)(globalRowStart + i),
+                $"seq_f64[{globalRowStart + i}]: expected {(double)(globalRowStart + i)}, got {col.GetValue(i)}");
+    }
+
+    // seq_bool: Boolean, alternating (Rle)
+    if (Idx("seq_bool") >= 0)
+    {
+        var col = (BooleanArray)batch.Column(Idx("seq_bool"));
+        for (int i = 0; i < len; i++)
+            Check(col.GetValue(i) == ((globalRowStart + i) % 2 == 0),
+                $"seq_bool[{globalRowStart + i}]: expected {(globalRowStart + i) % 2 == 0}");
+    }
+
+    // seq_str: String, monotonic (DeltaLengthByteArray)
+    if (Idx("seq_str") >= 0)
+    {
+        var col = (StringArray)batch.Column(Idx("seq_str"));
+        for (int i = 0; i < len; i++)
+        {
+            string expected = (globalRowStart + i).ToString();
+            Check(col.GetString(i) == expected,
+                $"seq_str[{globalRowStart + i}]: expected \"{expected}\", got \"{col.GetString(i)}\"");
+        }
+    }
+
+    // seq_bin: Binary, 4-byte LE monotonic (DeltaByteArray)
+    if (Idx("seq_bin") >= 0)
+    {
+        var col = (BinaryArray)batch.Column(Idx("seq_bin"));
+        for (int i = 0; i < len; i++)
+        {
+            int g = globalRowStart + i;
+            var span = col.GetBytes(i);
+            int actual = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span);
+            Check(actual == g, $"seq_bin[{g}]: expected {g}, got {actual}");
+        }
+    }
+
+    // seq_dict: String, low-cardinality repeating (RleDictionary)
+    if (Idx("seq_dict") >= 0)
+    {
+        string[] categories = ["alpha", "beta", "gamma", "delta", "epsilon",
+                               "zeta", "eta", "theta", "iota", "kappa"];
+        var col = (StringArray)batch.Column(Idx("seq_dict"));
+        for (int i = 0; i < len; i++)
+        {
+            string expected = categories[(globalRowStart + i) % categories.Length];
+            Check(col.GetString(i) == expected,
+                $"seq_dict[{globalRowStart + i}]: expected \"{expected}\", got \"{col.GetString(i)}\"");
+        }
+    }
+
+    // seq_fsb: FixedSizeBinary(4), 4-byte LE monotonic (Plain)
+    if (Idx("seq_fsb") >= 0)
+    {
+        var col = (FixedSizeBinaryArray)batch.Column(Idx("seq_fsb"));
+        for (int i = 0; i < len; i++)
+        {
+            int g = globalRowStart + i;
+            var span = col.GetBytes(i);
+            int actual = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span);
+            Check(actual == g, $"seq_fsb[{g}]: expected {g}, got {actual}");
+        }
+    }
+
+    // id: Int64, sequential (should match globalRowStart + i)
+    if (Idx("id") >= 0)
+    {
+        var col = (Int64Array)batch.Column(Idx("id"));
+        for (int i = 0; i < len; i++)
+            Check(col.GetValue(i) == globalRowStart + i,
+                $"id[{globalRowStart + i}]: expected {globalRowStart + i}, got {col.GetValue(i)}");
+    }
+}
+
+static void Check(bool condition, string message)
+{
+    if (!condition)
+        throw new InvalidDataException($"Validation failed: {message}");
 }
 
 // ---------------------------------------------------------------------------
