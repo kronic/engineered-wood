@@ -46,6 +46,16 @@ public sealed class ParquetReadOptions
     public int? BatchSize { get; init; }
 
     /// <summary>
+    /// Approximate maximum uncompressed size (in bytes) of a single <see cref="Apache.Arrow.RecordBatch"/>.
+    /// The budget is measured as the sum of uncompressed Parquet page sizes across all columns;
+    /// the actual Arrow representation may be somewhat larger due to validity bitmaps, offset
+    /// arrays, and alignment padding. When both <see cref="BatchSize"/> and
+    /// <see cref="MaxBatchByteSize"/> are set, the more restrictive limit wins.
+    /// When <see langword="null"/> (the default), no size limit is applied.
+    /// </summary>
+    public long? MaxBatchByteSize { get; init; }
+
+    /// <summary>
     /// Shorthand for <c>ByteArrayOutput == ByteArrayOutputKind.ViewType</c>.
     /// When set to <see langword="true"/>, sets <see cref="ByteArrayOutput"/> to
     /// <see cref="ByteArrayOutputKind.ViewType"/>; setting to <see langword="false"/>

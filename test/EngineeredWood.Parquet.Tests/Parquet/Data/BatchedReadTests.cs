@@ -483,4 +483,147 @@ public class BatchedReadTests : IDisposable
         var metadata = await reader.ReadMetadataAsync();
         Assert.Equal(metadata.NumRows, batches.Sum(b => (int)b.Length));
     }
+
+    // ------------------------------------------------------------------
+    // Size-based batching (MaxBatchByteSize)
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task MaxBatchByteSize_SplitsRowGroup()
+    {
+        int totalRows = 1000;
+        var batch = MakeMultiColumnBatch(totalRows);
+        // Multi-column batch with small pages to guarantee many pages.
+        var path = await WriteFile(batch, "size_split.parquet", new ParquetWriteOptions
+        {
+            Compression = CompressionCodec.Uncompressed,
+            DataPageSize = 256, // very small pages
+        });
+
+        // Budget that's much smaller than the total uncompressed size.
+        var readOptions = new ParquetReadOptions { MaxBatchByteSize = 2000 };
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false, readOptions);
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in reader.ReadRowGroupBatchesAsync(0))
+            batches.Add(b);
+
+        Assert.True(batches.Count > 1, $"Expected multiple batches but got {batches.Count}");
+        Assert.Equal(totalRows, batches.Sum(b => (int)b.Length));
+
+        // Verify values are sequential.
+        int expected = 0;
+        foreach (var b in batches)
+        {
+            var ids = (Int32Array)b.Column(0);
+            for (int i = 0; i < b.Length; i++)
+                Assert.Equal(expected++, ids.GetValue(i));
+        }
+    }
+
+    [Fact]
+    public async Task MaxBatchByteSize_LargeBudget_SingleBatch()
+    {
+        int totalRows = 100;
+        var batch = MakeInt32Batch(totalRows);
+        var path = await WriteFile(batch, "size_large.parquet");
+
+        // Budget larger than the entire row group — should produce one batch.
+        var readOptions = new ParquetReadOptions { MaxBatchByteSize = 10_000_000 };
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false, readOptions);
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in reader.ReadRowGroupBatchesAsync(0))
+            batches.Add(b);
+
+        Assert.Single(batches);
+        Assert.Equal(totalRows, (int)batches[0].Length);
+    }
+
+    [Fact]
+    public async Task MaxBatchByteSize_WithRowLimit_MostRestrictiveWins()
+    {
+        int totalRows = 1000;
+        var batch = MakeMultiColumnBatch(totalRows);
+        var path = await WriteFile(batch, "size_and_rows.parquet", new ParquetWriteOptions
+        {
+            Compression = CompressionCodec.Uncompressed,
+            DataPageSize = 256,
+        });
+
+        // Set both limits. The row limit (50) will be more restrictive than the
+        // byte budget for most page sizes.
+        var readOptions = new ParquetReadOptions
+        {
+            BatchSize = 50,
+            MaxBatchByteSize = 10_000_000,
+        };
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false, readOptions);
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in reader.ReadRowGroupBatchesAsync(0))
+            batches.Add(b);
+
+        Assert.Equal(totalRows, batches.Sum(b => (int)b.Length));
+        // With a 50-row limit the batch count should be at least 20.
+        Assert.True(batches.Count >= 20,
+            $"Expected ≥20 batches from row limit but got {batches.Count}");
+    }
+
+    [Fact]
+    public async Task MaxBatchByteSize_MultiColumn_ValuesAlign()
+    {
+        int totalRows = 1000;
+        var batch = MakeMultiColumnBatch(totalRows);
+        var path = await WriteFile(batch, "size_multi_col.parquet");
+
+        // Tight byte budget to force splitting.
+        var readOptions = new ParquetReadOptions { MaxBatchByteSize = 2000 };
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false, readOptions);
+
+        int expectedId = 0;
+        await foreach (var b in reader.ReadRowGroupBatchesAsync(0))
+        {
+            var ids = (Int32Array)b.Column(0);
+            var names = (StringArray)b.Column(1);
+            var scores = (DoubleArray)b.Column(2);
+
+            for (int i = 0; i < b.Length; i++)
+            {
+                Assert.Equal(expectedId, ids.GetValue(i));
+                Assert.Equal($"row-{expectedId}", names.GetString(i));
+                Assert.Equal(expectedId * 1.5, scores.GetValue(i));
+                expectedId++;
+            }
+        }
+
+        Assert.Equal(totalRows, expectedId);
+    }
+
+    [Fact]
+    public async Task MaxBatchByteSize_ReadAllAsync_StreamsThroughBatching()
+    {
+        int totalRows = 1000;
+        var batch = MakeMultiColumnBatch(totalRows);
+        var path = await WriteFile(batch, "size_readall.parquet", new ParquetWriteOptions
+        {
+            Compression = CompressionCodec.Uncompressed,
+            DataPageSize = 256,
+        });
+
+        var readOptions = new ParquetReadOptions { MaxBatchByteSize = 2000 };
+        await using var file = new LocalRandomAccessFile(path);
+        await using var reader = new ParquetFileReader(file, ownsFile: false, readOptions);
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in reader.ReadAllAsync())
+            batches.Add(b);
+
+        Assert.True(batches.Count > 1);
+        Assert.Equal(totalRows, batches.Sum(b => (int)b.Length));
+    }
 }

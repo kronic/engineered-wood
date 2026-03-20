@@ -165,7 +165,7 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
         for (int i = 0; i < metadata.RowGroups.Count; i++)
         {
-            if (_options.BatchSize is > 0)
+            if (_options.BatchSize is > 0 || _options.MaxBatchByteSize is > 0)
             {
                 await foreach (var batch in ReadRowGroupBatchesAsync(i, columnNames, cancellationToken)
                     .ConfigureAwait(false))
@@ -200,10 +200,11 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
         CancellationToken cancellationToken = default)
     {
         int? batchSize = _options.BatchSize;
+        long? maxBytes = _options.MaxBatchByteSize;
+        bool hasBatchLimit = batchSize is > 0 || maxBytes is > 0;
 
-        // When no batch size is set, or the row group fits in one batch, fall back
-        // to the standard single-batch path.
-        if (batchSize is not > 0)
+        // When no batch limit is set, fall back to the standard single-batch path.
+        if (!hasBatchLimit)
         {
             yield return await ReadRowGroupAsync(rowGroupIndex, columnNames, cancellationToken)
                 .ConfigureAwait(false);
@@ -213,7 +214,23 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
         var ctx = await PrepareRowGroupAsync(rowGroupIndex, columnNames, cancellationToken)
             .ConfigureAwait(false);
 
-        if (ctx.RowCount <= batchSize.Value)
+        // Check whether the entire row group fits in one batch.
+        bool fitsInOneBatch = true;
+        if (batchSize is > 0 && ctx.RowCount > batchSize.Value)
+            fitsInOneBatch = false;
+        if (maxBytes is > 0)
+        {
+            long totalUncompressed = 0;
+            for (int i = 0; i < ctx.Count; i++)
+            {
+                var meta = ctx.Chunks[i].MetaData!;
+                totalUncompressed += meta.TotalUncompressedSize;
+            }
+            if (totalUncompressed > maxBytes.Value)
+                fitsInOneBatch = false;
+        }
+
+        if (fitsInOneBatch)
         {
             // Row group fits in a single batch — use the optimised single-pass path.
             var buffers = await _file.ReadRangesAsync(ctx.Ranges, cancellationToken)
@@ -254,14 +271,16 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                     ctx.Chunks[i].MetaData!);
             });
 
-            // Yield batches by walking through the row group in BatchSize increments.
+            // Yield batches by walking through the row group in increments
+            // bounded by BatchSize and/or MaxBatchByteSize.
             int rowsEmitted = 0;
             while (rowsEmitted < ctx.RowCount)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 int batchStartRow = rowsEmitted;
-                int actualBatchRows = Math.Min(batchSize.Value, ctx.RowCount - batchStartRow);
+                int actualBatchRows = ComputeBatchRowCount(
+                    pageMaps, batchStartRow, ctx.RowCount, batchSize, maxBytes);
                 int lastRow = batchStartRow + actualBatchRows - 1;
 
                 var results = new ColumnResult[ctx.Count];
@@ -307,6 +326,82 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
             for (int i = 0; i < columnBuffers.Count; i++)
                 columnBuffers[i].Dispose();
         }
+    }
+
+    /// <summary>
+    /// Determines how many rows the next batch should contain, respecting both the
+    /// row-count limit (<paramref name="batchSize"/>) and the byte-size limit
+    /// (<paramref name="maxBytes"/>). Always returns at least 1 row (so that a
+    /// single very large page doesn't stall progress).
+    /// </summary>
+    private static int ComputeBatchRowCount(
+        ColumnPageMap[] pageMaps,
+        int batchStartRow,
+        int totalRows,
+        int? batchSize,
+        long? maxBytes)
+    {
+        int remaining = totalRows - batchStartRow;
+
+        // Row-count limit only.
+        if (maxBytes is not > 0)
+            return Math.Min(batchSize!.Value, remaining);
+
+        // Walk forward row-by-row (at page granularity) accumulating uncompressed
+        // page sizes across all columns until the byte budget is exceeded.
+        long budget = maxBytes.Value;
+        int rowLimit = batchSize is > 0 ? Math.Min(batchSize.Value, remaining) : remaining;
+        int candidateRows = 0;
+
+        // Track per-column "last included page" to avoid double-counting pages
+        // that span across iteration steps.
+        int colCount = pageMaps.Length;
+        Span<int> lastIncludedPage = colCount <= 64
+            ? stackalloc int[colCount]
+            : new int[colCount];
+        for (int c = 0; c < colCount; c++)
+            lastIncludedPage[c] = -1;
+
+        long accumulated = 0;
+        int cursor = batchStartRow;
+
+        while (cursor < totalRows && candidateRows < rowLimit)
+        {
+            // For each column, find the page covering 'cursor' and add any
+            // newly-entered pages' uncompressed sizes to the accumulator.
+            long stepBytes = 0;
+            int stepEndRow = totalRows; // will be narrowed to the earliest page boundary
+
+            for (int c = 0; c < colCount; c++)
+            {
+                var map = pageMaps[c];
+                int pageIdx = map.FindPageForRow(cursor);
+
+                if (pageIdx != lastIncludedPage[c])
+                {
+                    stepBytes += map.Pages[pageIdx].UncompressedSize;
+                    lastIncludedPage[c] = pageIdx;
+                }
+
+                // The end of this page determines the next boundary to check.
+                int pageEndRow = map.CumulativeRows[pageIdx + 1];
+                if (pageEndRow < stepEndRow)
+                    stepEndRow = pageEndRow;
+            }
+
+            int stepRows = stepEndRow - cursor;
+
+            // Check if adding this step would exceed the budget.
+            if (accumulated + stepBytes > budget && candidateRows > 0)
+                break; // stop before this step — we already have at least one page
+
+            accumulated += stepBytes;
+            candidateRows += stepRows;
+            cursor = stepEndRow;
+        }
+
+        // Clamp to remaining rows and ensure at least 1.
+        return Math.Max(1, Math.Min(candidateRows, remaining));
     }
 
     /// <summary>
