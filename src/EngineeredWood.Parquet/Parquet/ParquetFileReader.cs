@@ -255,43 +255,73 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
             yield break;
         }
 
-        // Multi-batch path: read all column chunks, build page maps, yield batches.
-        var columnBuffers = await _file.ReadRangesAsync(ctx.Ranges, cancellationToken)
-            .ConfigureAwait(false);
+        // Multi-batch path: build page maps, then read only the pages needed per batch.
+        //
+        // Phase 1: Read each column chunk to scan page headers and build page maps.
+        //          The full column buffers are released after scanning.
+        // Phase 2: For each batch, compute the file-level byte ranges for only the
+        //          pages that overlap the target row range, read those, decode, yield.
 
-        try
+        var pageMaps = new ColumnPageMap[ctx.Count];
+        for (int i = 0; i < ctx.Count; i++)
         {
-            // Build page maps for all columns.
-            var pageMaps = new ColumnPageMap[ctx.Count];
-            Parallel.For(0, ctx.Count, i =>
+            using var buffer = await _file.ReadAsync(ctx.Ranges[i], cancellationToken)
+                .ConfigureAwait(false);
+            pageMaps[i] = PageMapBuilder.Build(
+                buffer.Memory.Span,
+                ctx.Columns[i],
+                ctx.Chunks[i].MetaData!);
+        }
+
+        // Phase 2: yield batches, reading only the needed pages per batch.
+        int rowsEmitted = 0;
+        while (rowsEmitted < ctx.RowCount)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            int batchStartRow = rowsEmitted;
+            int actualBatchRows = ComputeBatchRowCount(
+                pageMaps, batchStartRow, ctx.RowCount, batchSize, maxBytes);
+            int lastRow = batchStartRow + actualBatchRows - 1;
+
+            // Compute the file-level byte range covering the needed pages for
+            // each column and read only those bytes.
+            var pageRanges = new FileRange[ctx.Count];
+            var pageOffsets = new int[ctx.Count]; // startPage per column
+            var pageEnds = new int[ctx.Count];    // endPage per column
+            var baseOffsets = new long[ctx.Count]; // file offset of first byte read per column
+
+            for (int i = 0; i < ctx.Count; i++)
             {
-                pageMaps[i] = PageMapBuilder.Build(
-                    columnBuffers[i].Memory.Span,
-                    ctx.Columns[i],
-                    ctx.Chunks[i].MetaData!);
-            });
+                int startPage = pageMaps[i].FindPageForRow(batchStartRow);
+                int endPage = pageMaps[i].FindPageForRow(lastRow);
+                pageOffsets[i] = startPage;
+                pageEnds[i] = endPage;
 
-            // Yield batches by walking through the row group in increments
-            // bounded by BatchSize and/or MaxBatchByteSize.
-            int rowsEmitted = 0;
-            while (rowsEmitted < ctx.RowCount)
+                var firstEntry = pageMaps[i].Pages[startPage];
+                var lastEntry = pageMaps[i].Pages[endPage];
+                long rangeStart = ctx.Ranges[i].Offset + firstEntry.Offset;
+                long rangeEnd = ctx.Ranges[i].Offset + lastEntry.Offset + lastEntry.CompressedSize;
+                pageRanges[i] = new FileRange(rangeStart, rangeEnd - rangeStart);
+                baseOffsets[i] = firstEntry.Offset; // offset of startPage within column chunk
+            }
+
+            var pageBuffers = await _file.ReadRangesAsync(pageRanges, cancellationToken)
+                .ConfigureAwait(false);
+
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                int batchStartRow = rowsEmitted;
-                int actualBatchRows = ComputeBatchRowCount(
-                    pageMaps, batchStartRow, ctx.RowCount, batchSize, maxBytes);
-                int lastRow = batchStartRow + actualBatchRows - 1;
-
                 var results = new ColumnResult[ctx.Count];
                 Parallel.For(0, ctx.Count, i =>
                 {
-                    int startPage = pageMaps[i].FindPageForRow(batchStartRow);
-                    int endPage = pageMaps[i].FindPageForRow(lastRow);
+                    int startPage = pageOffsets[i];
+                    int endPage = pageEnds[i];
                     int pageStartRow = pageMaps[i].CumulativeRows[startPage];
+                    long baseOffset = baseOffsets[i];
 
-                    var fullResult = ColumnChunkReader.ReadColumnBatch(
-                        columnBuffers[i].Memory.Span,
+                    var fullResult = ColumnChunkReader.ReadColumnBatchFromSlice(
+                        pageBuffers[i].Memory.Span,
+                        baseOffset,
                         ctx.Columns[i],
                         ctx.Chunks[i].MetaData!,
                         pageMaps[i],
@@ -299,8 +329,6 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                         ctx.LeafArrowFields[i],
                         ctx.HasNestedColumns);
 
-                    // Slice the array to extract exactly the target row range.
-                    // Pages may extend before batchStartRow and/or after lastRow.
                     int skipRows = batchStartRow - pageStartRow;
                     if (skipRows > 0 || fullResult.Array.Length > actualBatchRows)
                     {
@@ -317,14 +345,14 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
                 yield return AssembleRecordBatch(
                     ctx with { RowCount = actualBatchRows }, results);
-
-                rowsEmitted += actualBatchRows;
             }
-        }
-        finally
-        {
-            for (int i = 0; i < columnBuffers.Count; i++)
-                columnBuffers[i].Dispose();
+            finally
+            {
+                for (int i = 0; i < pageBuffers.Count; i++)
+                    pageBuffers[i].Dispose();
+            }
+
+            rowsEmitted += actualBatchRows;
         }
     }
 

@@ -228,6 +228,87 @@ internal static class ColumnChunkReader
     }
 
     /// <summary>
+    /// Like <see cref="ReadColumnBatch"/> but the <paramref name="data"/> buffer is a
+    /// sub-range of the column chunk starting at byte offset <paramref name="dataBaseOffset"/>
+    /// (the offset of the first page in the slice). Page offsets in the page map are
+    /// adjusted by subtracting this base.
+    /// </summary>
+    public static ColumnResult ReadColumnBatchFromSlice(
+        ReadOnlySpan<byte> data,
+        long dataBaseOffset,
+        ColumnDescriptor column,
+        ColumnMetaData columnMeta,
+        ColumnPageMap pageMap,
+        int startPage,
+        int endPage,
+        Field arrowField,
+        bool preserveDefLevels = false)
+    {
+        bool isRepeated = column.MaxRepetitionLevel > 0;
+
+        int pageNumValues = pageMap.CumulativeValues[endPage + 1] - pageMap.CumulativeValues[startPage];
+        int pageRowCount = pageMap.CumulativeRows[endPage + 1] - pageMap.CumulativeRows[startPage];
+        int capacity = isRepeated ? pageNumValues : pageRowCount;
+
+        var byteArrayOutput = arrowField.DataType switch
+        {
+            StringViewType or BinaryViewType => ByteArrayOutputKind.ViewType,
+            LargeStringType or LargeBinaryType => ByteArrayOutputKind.LargeOffsets,
+            _ => ByteArrayOutputKind.Default,
+        };
+
+        using var state = new ColumnBuildState(
+            column.PhysicalType, column.MaxDefinitionLevel, column.MaxRepetitionLevel, capacity,
+            byteArrayOutput);
+
+        for (int p = startPage; p <= endPage; p++)
+        {
+            var entry = pageMap.Pages[p];
+            int localOffset = (int)(entry.Offset - dataBaseOffset);
+            var pageData = data.Slice(localOffset, entry.CompressedSize);
+
+            if (entry.Type == PageType.DataPage)
+            {
+                ReadDataPageV1FromEntry(entry, pageData, column, columnMeta, pageMap.Dictionary, state);
+            }
+            else if (entry.Type == PageType.DataPageV2)
+            {
+                ReadDataPageV2FromEntry(entry, pageData, column, columnMeta, pageMap.Dictionary, state);
+            }
+        }
+
+        int[]? defLevels = null;
+        if ((preserveDefLevels || isRepeated) && column.MaxDefinitionLevel > 0)
+        {
+            var src = state.DefLevelSpan;
+            defLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                defLevels[i] = src[i];
+        }
+
+        int[]? repLevels = null;
+        if (isRepeated)
+        {
+            var src = state.RepLevelSpan;
+            repLevels = new int[src.Length];
+            for (int i = 0; i < src.Length; i++)
+                repLevels[i] = src[i];
+        }
+
+        IArrowArray array;
+        if (isRepeated)
+        {
+            array = ArrowArrayBuilder.BuildDense(state, arrowField, pageNumValues);
+        }
+        else
+        {
+            array = ArrowArrayBuilder.Build(state, arrowField, pageRowCount);
+        }
+
+        return new ColumnResult(array, defLevels, repLevels);
+    }
+
+    /// <summary>
     /// Decodes a V1 data page using metadata from a <see cref="PageMapEntry"/>.
     /// </summary>
     private static void ReadDataPageV1FromEntry(
