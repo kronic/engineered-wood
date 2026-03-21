@@ -290,7 +290,7 @@ public class BufferedVsUnbufferedTests : IDisposable
             for (int r = 0; r < batch.Length; r++)
             {
                 string key = array.IsNull(r) ? "__NULL__" : GetStringValue(array, r);
-                counts[key] = counts.GetValueOrDefault(key) + 1;
+                counts[key] = counts.TryGetValue(key, out var v) ? v + 1 : 1;
             }
             result[c] = counts;
         }
@@ -311,7 +311,7 @@ public class BufferedVsUnbufferedTests : IDisposable
                 for (int r = 0; r < batch.Length; r++)
                 {
                     string key = array.IsNull(r) ? "__NULL__" : GetStringValue(array, r);
-                    counts[key] = counts.GetValueOrDefault(key) + 1;
+                    counts[key] = counts.TryGetValue(key, out var v) ? v + 1 : 1;
                 }
             }
         }
@@ -333,16 +333,16 @@ public class BufferedVsUnbufferedTests : IDisposable
         Dictionary<int, Dictionary<string, int>> actual)
     {
         Assert.Equal(expected.Count, actual.Count);
-        foreach (var (col, expectedCounts) in expected)
+        foreach (var colEntry in expected)
         {
-            Assert.True(actual.ContainsKey(col), $"Missing column {col}");
-            var actualCounts = actual[col];
-            Assert.Equal(expectedCounts.Count, actualCounts.Count);
-            foreach (var (key, count) in expectedCounts)
+            Assert.True(actual.ContainsKey(colEntry.Key), $"Missing column {colEntry.Key}");
+            var actualCounts = actual[colEntry.Key];
+            Assert.Equal(colEntry.Value.Count, actualCounts.Count);
+            foreach (var kvp in colEntry.Value)
             {
-                Assert.True(actualCounts.ContainsKey(key),
-                    $"Col {col}: missing value '{key}'");
-                Assert.Equal(count, actualCounts[key]);
+                Assert.True(actualCounts.ContainsKey(kvp.Key),
+                    $"Col {colEntry.Key}: missing value '{kvp.Key}'");
+                Assert.Equal(kvp.Value, actualCounts[kvp.Key]);
             }
         }
     }

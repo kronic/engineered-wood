@@ -95,7 +95,11 @@ public sealed class SchemaDescriptor
         {
             columns.Add(new ColumnDescriptor
             {
+#if NET8_0_OR_GREATER
                 Path = pathBuffer[..depth].ToArray(),
+#else
+                Path = pathBuffer.AsSpan(0, depth).ToArray(),
+#endif
                 PhysicalType = node.Element.Type!.Value,
                 TypeLength = node.Element.TypeLength,
                 MaxDefinitionLevel = defLevel,

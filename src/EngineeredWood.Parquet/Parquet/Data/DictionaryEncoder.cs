@@ -59,7 +59,11 @@ internal static class DictionaryEncoder
     /// Calculates the bit width needed to encode dictionary indices.
     /// </summary>
     public static int GetIndexBitWidth(int dictionaryCount) =>
+#if NET8_0_OR_GREATER
         dictionaryCount <= 1 ? 1 : 32 - int.LeadingZeroCount(dictionaryCount - 1);
+#else
+        dictionaryCount <= 1 ? 1 : 32 - BitPolyfills.LeadingZeroCount((uint)(dictionaryCount - 1));
+#endif
 
     private static DictionaryResult? TryEncodeFixed<T>(
         IArrowArray array, int[]? defLevels, int nonNullCount, int pageSizeLimit)

@@ -19,9 +19,15 @@ internal sealed class NativeMemoryManager : MemoryManager<byte>
     public unsafe NativeMemoryManager(int length, int alignment, bool zeroFill)
     {
         _length = length;
+#if NET6_0_OR_GREATER
         _pointer = NativeMemory.AlignedAlloc((nuint)length, (nuint)alignment);
         if (zeroFill)
             NativeMemory.Clear(_pointer, (nuint)length);
+#else
+        _pointer = (void*)Marshal.AllocHGlobal(length);
+        if (zeroFill)
+            Unsafe.InitBlockUnaligned(ref *(byte*)_pointer, 0, (uint)length);
+#endif
         NativeMemoryTracker.OnAlloc(length);
     }
 
@@ -50,7 +56,11 @@ internal sealed class NativeMemoryManager : MemoryManager<byte>
             if (_pointer != null)
             {
                 NativeMemoryTracker.OnFree(_length);
+#if NET6_0_OR_GREATER
                 NativeMemory.AlignedFree(_pointer);
+#else
+                Marshal.FreeHGlobal((IntPtr)_pointer);
+#endif
                 _pointer = null;
             }
         }
@@ -63,7 +73,14 @@ internal sealed class NativeMemoryManager : MemoryManager<byte>
     public unsafe void Reallocate(int newLength)
     {
         int oldLength = _length;
+#if NET6_0_OR_GREATER
         _pointer = NativeMemory.AlignedRealloc(_pointer, (nuint)newLength, 64);
+#else
+        void* newPtr = (void*)Marshal.AllocHGlobal(newLength);
+        Buffer.MemoryCopy(_pointer, newPtr, newLength, Math.Min(oldLength, newLength));
+        Marshal.FreeHGlobal((IntPtr)_pointer);
+        _pointer = newPtr;
+#endif
         _length = newLength;
         NativeMemoryTracker.OnRealloc(oldLength, newLength);
     }

@@ -46,7 +46,9 @@ internal static class ArrowArrayBuilder
             UInt32Type => BuildDenseFixedArray<uint>(state, arrowType, numValues),
             Int64Type or TimestampType or Time64Type => BuildDenseFixedArray<long>(state, arrowType, numValues),
             UInt64Type => BuildDenseFixedArray<ulong>(state, arrowType, numValues),
+#if NET6_0_OR_GREATER
             HalfFloatType => BuildDenseFixedArray<Half>(state, arrowType, numValues),
+#endif
             FloatType => BuildDenseFixedArray<float>(state, arrowType, numValues),
             DoubleType => BuildDenseFixedArray<double>(state, arrowType, numValues),
             StringType => BuildDenseVarBinaryArray(state, arrowType, numValues),
@@ -291,7 +293,9 @@ internal static class ArrowArrayBuilder
             UInt32Type => BuildFixedArray<uint>(state, arrowType, rowCount),
             Int64Type or TimestampType or Time64Type => BuildFixedArray<long>(state, arrowType, rowCount),
             UInt64Type => BuildFixedArray<ulong>(state, arrowType, rowCount),
+#if NET6_0_OR_GREATER
             HalfFloatType => BuildFixedArray<Half>(state, arrowType, rowCount),
+#endif
             FloatType => BuildFixedArray<float>(state, arrowType, rowCount),
             DoubleType => BuildFixedArray<double>(state, arrowType, rowCount),
             StringType => BuildStringArray(state, rowCount),
@@ -1311,7 +1315,12 @@ internal sealed class ColumnBuildState : IDisposable
         Span<byte> viewsBuf = _viewsBuffer!.ByteSpan;
         int viewBase = _viewsCount * ViewEntrySize;
 
+
+#if NET8_0_OR_GREATER
         MemoryMarshal.Write(viewsBuf.Slice(viewBase), in len);
+#else
+        MemoryMarshal.Write(viewsBuf.Slice(viewBase), ref len);
+#endif
 
         if (len <= MaxInlineLength)
         {
@@ -1324,9 +1333,17 @@ internal sealed class ColumnBuildState : IDisposable
             // Reference: write 4-byte prefix, then buf_index=0, buf_offset
             value.Slice(0, 4).CopyTo(viewsBuf.Slice(viewBase + 4));
             int bufIdx = 0;
+#if NET8_0_OR_GREATER
             MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), in bufIdx);
+#else
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), ref bufIdx);
+#endif
             int bufOff = _dataByteOffset;
+#if NET8_0_OR_GREATER
             MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), in bufOff);
+#else
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), ref bufOff);
+#endif
 
             // Append to overflow buffer
             int needed = _dataByteOffset + len;
@@ -1377,7 +1394,11 @@ internal sealed class ColumnBuildState : IDisposable
             srcPos += len;
 
             int viewBase = _viewsCount * ViewEntrySize;
+#if NET8_0_OR_GREATER
             MemoryMarshal.Write(viewsBuf.Slice(viewBase), in len);
+#else
+            MemoryMarshal.Write(viewsBuf.Slice(viewBase), ref len);
+#endif
 
             if (len <= MaxInlineLength)
             {
@@ -1388,9 +1409,17 @@ internal sealed class ColumnBuildState : IDisposable
             {
                 value.Slice(0, 4).CopyTo(viewsBuf.Slice(viewBase + 4));
                 int bufIdx = 0;
+#if NET8_0_OR_GREATER
                 MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), in bufIdx);
+#else
+                MemoryMarshal.Write(viewsBuf.Slice(viewBase + 8), ref bufIdx);
+#endif
                 int bufOff = _dataByteOffset;
+#if NET8_0_OR_GREATER
                 MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), in bufOff);
+#else
+                MemoryMarshal.Write(viewsBuf.Slice(viewBase + 12), ref bufOff);
+#endif
                 value.CopyTo(dataBuf.Slice(_dataByteOffset));
                 _dataByteOffset += len;
             }
@@ -1607,7 +1636,9 @@ internal static class ArrowArrayFactory
             UInt32Type => new UInt32Array(data),
             Int64Type => new Int64Array(data),
             UInt64Type => new UInt64Array(data),
+#if NET6_0_OR_GREATER
             HalfFloatType => new HalfFloatArray(data),
+#endif
             FloatType => new FloatArray(data),
             DoubleType => new DoubleArray(data),
             Date32Type => new Date32Array(data),

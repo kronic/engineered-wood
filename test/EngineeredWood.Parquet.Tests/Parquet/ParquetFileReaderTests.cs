@@ -70,7 +70,7 @@ public class ParquetFileReaderTests
         var tempPath = Path.GetTempFileName();
         try
         {
-            await File.WriteAllBytesAsync(tempPath, [0x01, 0x02, 0x03]);
+            await WriteAllBytesAsync(tempPath, new byte[] { 0x01, 0x02, 0x03 });
             await using var file = new LocalRandomAccessFile(tempPath);
             await using var reader = new ParquetFileReader(file, ownsFile: false);
 
@@ -97,7 +97,7 @@ public class ParquetFileReaderTests
             data[^3] = (byte)'X';
             data[^2] = (byte)'X';
             data[^1] = (byte)'X';
-            await File.WriteAllBytesAsync(tempPath, data);
+            await WriteAllBytesAsync(tempPath, data);
 
             await using var file = new LocalRandomAccessFile(tempPath);
             await using var reader = new ParquetFileReader(file, ownsFile: false);
@@ -199,4 +199,10 @@ public class ParquetFileReaderTests
         var length = await file.GetLengthAsync();
         Assert.True(length > 0);
     }
+
+#if NET8_0_OR_GREATER
+    private static Task WriteAllBytesAsync(string path, byte[] bytes) => File.WriteAllBytesAsync(path, bytes);
+#else
+    private static Task WriteAllBytesAsync(string path, byte[] bytes) { File.WriteAllBytes(path, bytes); return Task.CompletedTask; }
+#endif
 }

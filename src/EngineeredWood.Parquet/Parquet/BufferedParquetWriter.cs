@@ -61,7 +61,12 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
         RecordBatch batch,
         CancellationToken cancellationToken = default)
     {
+
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
         if (_closed)
             throw new InvalidOperationException("Writer has been closed.");
 
@@ -92,7 +97,11 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
     /// </summary>
     public async ValueTask FlushRowGroupAsync(CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_columnStates == null || _bufferedRows == 0)
             return;
@@ -241,7 +250,11 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
     /// </summary>
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_closed)
             return;
@@ -763,7 +776,12 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
                     idx = DictionaryCount++;
                     _fixedDict[key] = idx;
                     var bytes = new byte[elementSize];
+
+#if NET8_0_OR_GREATER
                     MemoryMarshal.Write(bytes, in val);
+#else
+                    MemoryMarshal.Write(bytes, ref val);
+#endif
                     _dictEntries.Add(bytes);
                     _dictPageSize += elementSize;
                 }
@@ -829,7 +847,12 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
                     idx = DictionaryCount++;
                     _floatDict[val] = idx;
                     var bytes = new byte[4];
+
+#if NET8_0_OR_GREATER
                     MemoryMarshal.Write(bytes, in val);
+#else
+                    MemoryMarshal.Write(bytes, ref val);
+#endif
                     _dictEntries.Add(bytes);
                     _dictPageSize += 4;
                 }
@@ -851,7 +874,12 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
                     idx = DictionaryCount++;
                     _doubleDict[val] = idx;
                     var bytes = new byte[8];
+
+#if NET8_0_OR_GREATER
                     MemoryMarshal.Write(bytes, in val);
+#else
+                    MemoryMarshal.Write(bytes, ref val);
+#endif
                     _dictEntries.Add(bytes);
                     _dictPageSize += 8;
                 }

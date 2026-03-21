@@ -46,7 +46,11 @@ public sealed class ParquetFileWriter : IAsyncDisposable, IDisposable
         RecordBatch batch,
         CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
         if (_closed)
             throw new InvalidOperationException("Writer has been closed.");
 
@@ -319,7 +323,11 @@ public sealed class ParquetFileWriter : IAsyncDisposable, IDisposable
     /// </summary>
     public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_closed)
             return;

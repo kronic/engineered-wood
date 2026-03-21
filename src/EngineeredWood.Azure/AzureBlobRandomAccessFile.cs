@@ -98,13 +98,25 @@ public sealed class AzureBlobRandomAccessFile : IRandomAccessFile
                 },
                 cancellationToken).ConfigureAwait(false);
 
+#if NET8_0_OR_GREATER
             await using Stream stream = result.Content;
+#else
+            using Stream stream = result.Content;
+#endif
             Memory<byte> memory = buffer.Memory;
             int totalRead = 0;
             while (totalRead < memory.Length)
             {
+#if NET8_0_OR_GREATER
                 int bytesRead = await stream.ReadAsync(
-                    memory[totalRead..], cancellationToken).ConfigureAwait(false);
+                    memory.Slice(totalRead), cancellationToken).ConfigureAwait(false);
+#else
+                // Stream.ReadAsync(Memory<byte>) not available on netstandard2.0
+                var tempBuf = new byte[memory.Length - totalRead];
+                int bytesRead = await stream.ReadAsync(
+                    tempBuf, 0, tempBuf.Length, cancellationToken).ConfigureAwait(false);
+                tempBuf.AsMemory(0, bytesRead).CopyTo(memory.Slice(totalRead));
+#endif
 
                 if (bytesRead == 0)
                     throw new IOException(

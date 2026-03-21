@@ -10,15 +10,24 @@ namespace EngineeredWood.IO.Local;
 /// </summary>
 public sealed class LocalRandomAccessFile : IRandomAccessFile
 {
+#if NET6_0_OR_GREATER
     private readonly SafeFileHandle _handle;
+#else
+    private readonly FileStream _stream;
+#endif
     private readonly BufferAllocator _allocator;
     private long _cachedLength = -1;
 
     public LocalRandomAccessFile(string path, BufferAllocator? allocator = null)
     {
         _allocator = allocator ?? PooledBufferAllocator.Default;
+#if NET6_0_OR_GREATER
         _handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
             FileShare.Read);
+#else
+        _stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, 4096, FileOptions.RandomAccess);
+#endif
     }
 
     public ValueTask<long> GetLengthAsync(CancellationToken cancellationToken = default)
@@ -28,7 +37,11 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
         if (_cachedLength >= 0)
             return new ValueTask<long>(_cachedLength);
 
+#if NET6_0_OR_GREATER
         long length = RandomAccess.GetLength(_handle);
+#else
+        long length = _stream.Length;
+#endif
         _cachedLength = length;
         return new ValueTask<long>(length);
     }
@@ -104,6 +117,7 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
     private void ReadExact(Span<byte> buffer, long offset)
     {
         int totalRead = 0;
+#if NET6_0_OR_GREATER
         while (totalRead < buffer.Length)
         {
             int bytesRead = RandomAccess.Read(
@@ -116,8 +130,25 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
 
             totalRead += bytesRead;
         }
+#else
+        byte[] tempBuffer = new byte[buffer.Length];
+        _stream.Seek(offset, SeekOrigin.Begin);
+        while (totalRead < tempBuffer.Length)
+        {
+            int bytesRead = _stream.Read(tempBuffer, totalRead, tempBuffer.Length - totalRead);
+
+            if (bytesRead == 0)
+                throw new IOException(
+                    $"Unexpected end of file at offset {offset + totalRead}. " +
+                    $"Expected {buffer.Length} bytes starting at offset {offset}.");
+
+            totalRead += bytesRead;
+        }
+        tempBuffer.AsSpan(0, totalRead).CopyTo(buffer);
+#endif
     }
 
+#if NET6_0_OR_GREATER
     public void Dispose() => _handle.Dispose();
 
     public ValueTask DisposeAsync()
@@ -125,4 +156,13 @@ public sealed class LocalRandomAccessFile : IRandomAccessFile
         _handle.Dispose();
         return default;
     }
+#else
+    public void Dispose() => _stream.Dispose();
+
+    public ValueTask DisposeAsync()
+    {
+        _stream.Dispose();
+        return default;
+    }
+#endif
 }

@@ -109,7 +109,11 @@ public class ThriftCompactReaderTests
     {
         // 3.14 as little-endian IEEE 754 double
         byte[] data = new byte[8];
+#if NET8_0_OR_GREATER
         BitConverter.TryWriteBytes(data, 3.14);
+#else
+        Buffer.BlockCopy(BitConverter.GetBytes(3.14), 0, data, 0, 8);
+#endif
         var reader = new ThriftCompactReader(data);
         Assert.Equal(3.14, reader.ReadDouble());
     }

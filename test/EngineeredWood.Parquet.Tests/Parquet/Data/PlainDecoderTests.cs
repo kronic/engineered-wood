@@ -43,8 +43,13 @@ public class PlainDecoderTests
     public void DecodeFloats()
     {
         var data = new byte[8];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteSingleLittleEndian(data.AsSpan(0), 3.14f);
         BinaryPrimitives.WriteSingleLittleEndian(data.AsSpan(4), -0.5f);
+#else
+        Buffer.BlockCopy(BitConverter.GetBytes(3.14f), 0, data, 0, 4);
+        Buffer.BlockCopy(BitConverter.GetBytes(-0.5f), 0, data, 4, 4);
+#endif
         var result = new float[2];
         PlainDecoder.DecodeFloats(data, result, 2);
         Assert.Equal(3.14f, result[0]);
@@ -55,8 +60,13 @@ public class PlainDecoderTests
     public void DecodeDoubles()
     {
         var data = new byte[16];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteDoubleLittleEndian(data.AsSpan(0), 2.718);
         BinaryPrimitives.WriteDoubleLittleEndian(data.AsSpan(8), -1.0);
+#else
+        Buffer.BlockCopy(BitConverter.GetBytes(2.718), 0, data, 0, 8);
+        Buffer.BlockCopy(BitConverter.GetBytes(-1.0), 0, data, 8, 8);
+#endif
         var result = new double[2];
         PlainDecoder.DecodeDoubles(data, result, 2);
         Assert.Equal(2.718, result[0]);
@@ -81,8 +91,8 @@ public class PlainDecoderTests
         Assert.Equal(0, offsets[0]);
         Assert.Equal(2, offsets[1]);
         Assert.Equal(7, offsets[2]);
-        Assert.Equal("hi"u8.ToArray(), values[0..2]);
-        Assert.Equal("world"u8.ToArray(), values[2..7]);
+        Assert.Equal("hi"u8.ToArray(), new ArraySegment<byte>(values, 0, 2).ToArray());
+        Assert.Equal("world"u8.ToArray(), new ArraySegment<byte>(values, 2, 5).ToArray());
     }
 
     [Fact]

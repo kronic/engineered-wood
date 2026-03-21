@@ -88,7 +88,12 @@ internal sealed class ThriftCompactWriter
     public void WriteDouble(double value)
     {
         EnsureCapacity(8);
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteDoubleLittleEndian(_buffer.AsSpan(_position), value);
+#else
+        byte[] tmp = BitConverter.GetBytes(value);
+        tmp.CopyTo(_buffer, _position);
+#endif
         _position += 8;
     }
 
@@ -107,7 +112,11 @@ internal sealed class ThriftCompactWriter
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
         WriteVarint((ulong)byteCount);
         EnsureCapacity(byteCount);
+#if NET8_0_OR_GREATER
         System.Text.Encoding.UTF8.GetBytes(value, _buffer.AsSpan(_position));
+#else
+        System.Text.Encoding.UTF8.GetBytes(value, 0, value.Length, _buffer, _position);
+#endif
         _position += byteCount;
     }
 

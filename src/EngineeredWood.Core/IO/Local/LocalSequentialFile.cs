@@ -24,7 +24,12 @@ public sealed class LocalSequentialFile : ISequentialFile
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+#if NET6_0_OR_GREATER
         _stream.Write(data.Span);
+#else
+        byte[] array = data.ToArray();
+        _stream.Write(array, 0, array.Length);
+#endif
         return default;
     }
 
@@ -39,5 +44,13 @@ public sealed class LocalSequentialFile : ISequentialFile
 
     public void Dispose() => _stream.Dispose();
 
+#if NET6_0_OR_GREATER
     public async ValueTask DisposeAsync() => await _stream.DisposeAsync().ConfigureAwait(false);
+#else
+    public ValueTask DisposeAsync()
+    {
+        _stream.Dispose();
+        return default;
+    }
+#endif
 }

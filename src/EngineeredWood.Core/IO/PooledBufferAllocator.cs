@@ -37,7 +37,12 @@ public sealed class PooledBufferAllocator : BufferAllocator
             get
             {
                 byte[]? array = _array;
+#if NET8_0_OR_GREATER
                 ObjectDisposedException.ThrowIf(array is null, this);
+#else
+                if (array is null)
+                    throw new ObjectDisposedException(nameof(PooledMemoryOwner));
+#endif
                 return array.AsMemory(0, _length);
             }
         }

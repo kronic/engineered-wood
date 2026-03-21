@@ -25,7 +25,11 @@ internal static class Compressor
             CompressionCodec.Uncompressed => inputLength,
             CompressionCodec.Snappy => Snappy.GetMaxCompressedLength(inputLength),
             CompressionCodec.Gzip => inputLength + 64, // conservative overhead estimate
+#if NET6_0_OR_GREATER
             CompressionCodec.Brotli => BrotliEncoder.GetMaxCompressedLength(inputLength),
+#else
+            CompressionCodec.Brotli => throw new NotSupportedException("Brotli compression is not supported on this platform."),
+#endif
             CompressionCodec.Lz4 => LZ4Codec.MaximumOutputSize(inputLength),
             CompressionCodec.Deflate => inputLength + 64,
             CompressionCodec.Zstd => ZstdSharp.Compressor.GetCompressBound(inputLength),
@@ -72,7 +76,12 @@ internal static class Compressor
         using var outputStream = new MemoryStream();
         using (var gzip = new GZipStream(outputStream, CompressionLevel.Fastest, leaveOpen: true))
         {
+#if NET6_0_OR_GREATER
             gzip.Write(source);
+#else
+            byte[] array = source.ToArray();
+            gzip.Write(array, 0, array.Length);
+#endif
         }
 
         int compressedLength = checked((int)outputStream.Length);
@@ -82,9 +91,13 @@ internal static class Compressor
 
     private static int CompressBrotli(ReadOnlySpan<byte> source, Span<byte> destination)
     {
+#if NET6_0_OR_GREATER
         if (!BrotliEncoder.TryCompress(source, destination, out int bytesWritten))
             throw new InvalidOperationException("Brotli compression failed.");
         return bytesWritten;
+#else
+        throw new NotSupportedException("Brotli compression is not supported on this platform.");
+#endif
     }
 
     private static int CompressLz4(ReadOnlySpan<byte> source, Span<byte> destination)
@@ -100,7 +113,12 @@ internal static class Compressor
         using var outputStream = new MemoryStream();
         using (var deflate = new DeflateStream(outputStream, CompressionLevel.Fastest, leaveOpen: true))
         {
+#if NET6_0_OR_GREATER
             deflate.Write(source);
+#else
+            byte[] array = source.ToArray();
+            deflate.Write(array, 0, array.Length);
+#endif
         }
 
         int compressedLength = checked((int)outputStream.Length);

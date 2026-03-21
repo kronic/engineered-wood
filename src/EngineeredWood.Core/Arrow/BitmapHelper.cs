@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+#if NET8_0_OR_GREATER
 using System.Runtime.Intrinsics;
+#endif
 
 namespace EngineeredWood.Arrow;
 
@@ -30,6 +32,7 @@ internal static class BitmapHelper
         ref byte valRef = ref MemoryMarshal.GetReference(values);
         int i = 0;
 
+#if NET8_0_OR_GREATER
         if (Vector256.IsHardwareAccelerated && count >= 32)
         {
             var targetVec = Vector256.Create(target);
@@ -52,6 +55,7 @@ internal static class BitmapHelper
                 Unsafe.WriteUnaligned(ref bitmap[i >> 3], (ushort)mask);
             }
         }
+#endif
 
         // Scalar tail
         int tailBitmapStart = i >> 3;

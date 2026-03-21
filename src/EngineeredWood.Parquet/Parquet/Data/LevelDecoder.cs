@@ -91,7 +91,11 @@ internal static class LevelDecoder
     internal static int GetBitWidth(int maxLevel)
     {
         if (maxLevel == 0) return 0;
+#if NET8_0_OR_GREATER
         return 32 - int.LeadingZeroCount(maxLevel);
+#else
+        return 32 - BitPolyfills.LeadingZeroCount((uint)maxLevel);
+#endif
     }
 
     /// <summary>

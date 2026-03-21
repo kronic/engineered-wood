@@ -79,7 +79,11 @@ internal ref struct ThriftCompactReader
     {
         if (_position + 8 > _data.Length)
             throw new ParquetFormatException("Unexpected end of Thrift data reading double.");
+#if NET8_0_OR_GREATER
         double value = BinaryPrimitives.ReadDoubleLittleEndian(_data.Slice(_position));
+#else
+        double value = BitConverter.ToDouble(_data.Slice(_position).ToArray(), 0);
+#endif
         _position += 8;
         return value;
     }
@@ -99,7 +103,11 @@ internal ref struct ThriftCompactReader
     public string ReadString()
     {
         var bytes = ReadBinary();
+#if NET8_0_OR_GREATER
         return System.Text.Encoding.UTF8.GetString(bytes);
+#else
+        return System.Text.Encoding.UTF8.GetString(bytes.ToArray());
+#endif
     }
 
     /// <summary>Reads a boolean value. If the bool was encoded in the field header, returns that cached value.</summary>

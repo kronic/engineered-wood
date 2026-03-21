@@ -627,6 +627,10 @@ public class ReadRowGroupTests
     [Fact]
     public async Task ByteStreamSplitExtendedGzip_ReadsAllColumns()
     {
+#if !NET8_0_OR_GREATER
+        await Task.CompletedTask; // File contains Float16 columns not decodable on net472
+        return;
+#else
         // 14 columns (Float16, float, double, int32, int64, FLBA5, decimal) × PLAIN + BYTE_STREAM_SPLIT,
         // 200 rows, all Gzip compressed.
         await using var file = new LocalRandomAccessFile(
@@ -725,6 +729,7 @@ public class ReadRowGroupTests
                     Assert.False(arr.IsNull(i)); // value is present; exact decimal decode not yet supported
             }
         }
+#endif
     }
 
     [Theory]
@@ -732,6 +737,10 @@ public class ReadRowGroupTests
     [InlineData("float16_zeros_and_nans.parquet")]
     public async Task Float16_ReadsTestFiles(string fileName)
     {
+#if !NET8_0_OR_GREATER
+        await Task.CompletedTask; // Half type not available on net472
+        return;
+#else
         await using var file = new LocalRandomAccessFile(TestData.GetPath(fileName));
         using var reader = new ParquetFileReader(file, ownsFile: false);
 
@@ -768,6 +777,7 @@ public class ReadRowGroupTests
                     BitConverter.HalfToInt16Bits(arr.GetValue(i)!.Value));
             }
         }
+#endif
     }
 
     [Fact]

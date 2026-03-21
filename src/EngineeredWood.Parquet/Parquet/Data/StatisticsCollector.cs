@@ -193,8 +193,13 @@ internal static class StatisticsCollector
         }
         var minBytes = new byte[elementSize];
         var maxBytes = new byte[elementSize];
+#if NET8_0_OR_GREATER
         MemoryMarshal.Write(minBytes, in min);
         MemoryMarshal.Write(maxBytes, in max);
+#else
+        MemoryMarshal.Write(minBytes, ref min);
+        MemoryMarshal.Write(maxBytes, ref max);
+#endif
         return (minBytes, maxBytes, true, true);
     }
 
@@ -210,14 +215,24 @@ internal static class StatisticsCollector
             if (first) { min = max = values[i]; first = false; }
             else
             {
+#if NET8_0_OR_GREATER
                 if (values[i] < min || (values[i] == 0f && min == 0f && float.IsNegative(values[i]))) min = values[i];
                 if (values[i] > max || (values[i] == 0f && max == 0f && !float.IsNegative(values[i]))) max = values[i];
+#else
+                if (values[i] < min || (values[i] == 0f && min == 0f && IsNegativeFloat(values[i]))) min = values[i];
+                if (values[i] > max || (values[i] == 0f && max == 0f && !IsNegativeFloat(values[i]))) max = values[i];
+#endif
             }
         }
         if (first) return (null, null, true, true);
         var minB = new byte[4]; var maxB = new byte[4];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteSingleLittleEndian(minB, min);
         BinaryPrimitives.WriteSingleLittleEndian(maxB, max);
+#else
+        BitConverter.GetBytes(min).CopyTo(minB, 0);
+        BitConverter.GetBytes(max).CopyTo(maxB, 0);
+#endif
         return (minB, maxB, true, true);
     }
 
@@ -233,14 +248,24 @@ internal static class StatisticsCollector
             if (first) { min = max = values[i]; first = false; }
             else
             {
+#if NET8_0_OR_GREATER
                 if (values[i] < min || (values[i] == 0.0 && min == 0.0 && double.IsNegative(values[i]))) min = values[i];
                 if (values[i] > max || (values[i] == 0.0 && max == 0.0 && !double.IsNegative(values[i]))) max = values[i];
+#else
+                if (values[i] < min || (values[i] == 0.0 && min == 0.0 && IsNegativeDouble(values[i]))) min = values[i];
+                if (values[i] > max || (values[i] == 0.0 && max == 0.0 && !IsNegativeDouble(values[i]))) max = values[i];
+#endif
             }
         }
         if (first) return (null, null, true, true);
         var minB = new byte[8]; var maxB = new byte[8];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteDoubleLittleEndian(minB, min);
         BinaryPrimitives.WriteDoubleLittleEndian(maxB, max);
+#else
+        BitConverter.GetBytes(min).CopyTo(minB, 0);
+        BitConverter.GetBytes(max).CopyTo(maxB, 0);
+#endif
         return (minB, maxB, true, true);
     }
 
@@ -293,8 +318,13 @@ internal static class StatisticsCollector
         int size = Marshal.SizeOf<T>();
         var minBytes = new byte[size];
         var maxBytes = new byte[size];
+#if NET8_0_OR_GREATER
         MemoryMarshal.Write(minBytes, in min);
         MemoryMarshal.Write(maxBytes, in max);
+#else
+        MemoryMarshal.Write(minBytes, ref min);
+        MemoryMarshal.Write(maxBytes, ref max);
+#endif
         return (minBytes, maxBytes);
     }
 
@@ -316,10 +346,17 @@ internal static class StatisticsCollector
             }
             else
             {
+#if NET8_0_OR_GREATER
                 if (val < min || (val == 0f && min == 0f && float.IsNegative(val)))
                     min = val;
                 if (val > max || (val == 0f && max == 0f && !float.IsNegative(val)))
                     max = val;
+#else
+                if (val < min || (val == 0f && min == 0f && IsNegativeFloat(val)))
+                    min = val;
+                if (val > max || (val == 0f && max == 0f && !IsNegativeFloat(val)))
+                    max = val;
+#endif
             }
         }
 
@@ -327,8 +364,13 @@ internal static class StatisticsCollector
 
         var minBytes = new byte[4];
         var maxBytes = new byte[4];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteSingleLittleEndian(minBytes, min);
         BinaryPrimitives.WriteSingleLittleEndian(maxBytes, max);
+#else
+        BitConverter.GetBytes(min).CopyTo(minBytes, 0);
+        BitConverter.GetBytes(max).CopyTo(maxBytes, 0);
+#endif
         return (minBytes, maxBytes);
     }
 
@@ -350,10 +392,17 @@ internal static class StatisticsCollector
             }
             else
             {
+#if NET8_0_OR_GREATER
                 if (val < min || (val == 0.0 && min == 0.0 && double.IsNegative(val)))
                     min = val;
                 if (val > max || (val == 0.0 && max == 0.0 && !double.IsNegative(val)))
                     max = val;
+#else
+                if (val < min || (val == 0.0 && min == 0.0 && IsNegativeDouble(val)))
+                    min = val;
+                if (val > max || (val == 0.0 && max == 0.0 && !IsNegativeDouble(val)))
+                    max = val;
+#endif
             }
         }
 
@@ -361,8 +410,13 @@ internal static class StatisticsCollector
 
         var minBytes = new byte[8];
         var maxBytes = new byte[8];
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteDoubleLittleEndian(minBytes, min);
         BinaryPrimitives.WriteDoubleLittleEndian(maxBytes, max);
+#else
+        BitConverter.GetBytes(min).CopyTo(minBytes, 0);
+        BitConverter.GetBytes(max).CopyTo(maxBytes, 0);
+#endif
         return (minBytes, maxBytes);
     }
 
@@ -498,4 +552,12 @@ internal static class StatisticsCollector
 
     private static int CompareInt32(int a, int b) => a.CompareTo(b);
     private static int CompareInt64(long a, long b) => a.CompareTo(b);
+
+#if !NET8_0_OR_GREATER
+    private static bool IsNegativeFloat(float value) =>
+        value < 0 || (value == 0 && float.IsNegativeInfinity(1.0f / value));
+
+    private static bool IsNegativeDouble(double value) =>
+        value < 0 || (value == 0 && double.IsNegativeInfinity(1.0 / value));
+#endif
 }

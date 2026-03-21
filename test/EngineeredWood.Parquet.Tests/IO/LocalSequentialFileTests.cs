@@ -28,7 +28,7 @@ public class LocalSequentialFileTests : IDisposable
         }
 
         Assert.True(File.Exists(path));
-        Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(path));
+        Assert.Equal(new byte[] { 1, 2, 3 }, await ReadAllBytesAsync(path));
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public class LocalSequentialFileTests : IDisposable
             await file.WriteAsync(new byte[] { 0x50, 0x41, 0x52, 0x31 }); // "PAR1"
         }
 
-        var content = await File.ReadAllBytesAsync(path);
+        var content = await ReadAllBytesAsync(path);
         Assert.Equal(11, content.Length);
         Assert.Equal(
             new byte[] { 0x50, 0x41, 0x52, 0x31, 0x00, 0x01, 0x02, 0x50, 0x41, 0x52, 0x31 },
@@ -75,14 +75,14 @@ public class LocalSequentialFileTests : IDisposable
     public async Task OverwritesExistingFile()
     {
         string path = Path.Combine(_tempDir, "test.bin");
-        await File.WriteAllBytesAsync(path, new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF });
+        await WriteAllBytesAsync(path, new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF });
 
         await using (var file = new LocalSequentialFile(path))
         {
             await file.WriteAsync(new byte[] { 1, 2, 3 });
         }
 
-        Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(path));
+        Assert.Equal(new byte[] { 1, 2, 3 }, await ReadAllBytesAsync(path));
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public class LocalSequentialFileTests : IDisposable
         }
 
         Assert.True(File.Exists(path));
-        Assert.Empty(await File.ReadAllBytesAsync(path));
+        Assert.Empty(await ReadAllBytesAsync(path));
     }
 
     [Fact]
@@ -110,6 +110,14 @@ public class LocalSequentialFileTests : IDisposable
             await file.WriteAsync(data);
         }
 
-        Assert.Equal(data, await File.ReadAllBytesAsync(path));
+        Assert.Equal(data, await ReadAllBytesAsync(path));
     }
+
+#if NET8_0_OR_GREATER
+    private static Task<byte[]> ReadAllBytesAsync(string path) => File.ReadAllBytesAsync(path);
+    private static Task WriteAllBytesAsync(string path, byte[] bytes) => File.WriteAllBytesAsync(path, bytes);
+#else
+    private static Task<byte[]> ReadAllBytesAsync(string path) => Task.FromResult(File.ReadAllBytes(path));
+    private static Task WriteAllBytesAsync(string path, byte[] bytes) { File.WriteAllBytes(path, bytes); return Task.CompletedTask; }
+#endif
 }

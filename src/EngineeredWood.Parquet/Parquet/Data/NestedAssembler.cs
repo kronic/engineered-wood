@@ -576,8 +576,10 @@ internal static class NestedAssembler
                 return TakeFixedWidth<float>(a, indices, count, a.Data.DataType);
             case DoubleArray a:
                 return TakeFixedWidth<double>(a, indices, count, a.Data.DataType);
+#if NET6_0_OR_GREATER
             case HalfFloatArray a:
                 return TakeFixedWidth<Half>(a, indices, count, a.Data.DataType);
+#endif
             case Date32Array a:
                 return TakeFixedWidth<int>(a, indices, count, a.Data.DataType);
             case TimestampArray a:

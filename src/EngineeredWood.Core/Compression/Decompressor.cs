@@ -56,21 +56,36 @@ internal static class Decompressor
             using var sourceStream = new UnmanagedMemoryStream(ptr, source.Length);
             using var gzip = new GZipStream(sourceStream, CompressionMode.Decompress);
             int totalRead = 0;
+#if NET6_0_OR_GREATER
             while (totalRead < destination.Length)
             {
                 int read = gzip.Read(destination.Slice(totalRead));
                 if (read == 0) break;
                 totalRead += read;
             }
+#else
+            byte[] tempBuffer = new byte[destination.Length];
+            while (totalRead < tempBuffer.Length)
+            {
+                int read = gzip.Read(tempBuffer, totalRead, tempBuffer.Length - totalRead);
+                if (read == 0) break;
+                totalRead += read;
+            }
+            tempBuffer.AsSpan(0, totalRead).CopyTo(destination);
+#endif
             return totalRead;
         }
     }
 
     private static int DecompressBrotli(ReadOnlySpan<byte> source, Span<byte> destination)
     {
+#if NET6_0_OR_GREATER
         if (!BrotliDecoder.TryDecompress(source, destination, out int bytesWritten))
             throw new InvalidDataException("Brotli decompression failed.");
         return bytesWritten;
+#else
+        throw new NotSupportedException("Brotli decompression is not supported on this platform.");
+#endif
     }
 
     private static int DecompressLz4Raw(ReadOnlySpan<byte> source, Span<byte> destination)
@@ -237,12 +252,23 @@ internal static class Decompressor
             using var sourceStream = new UnmanagedMemoryStream(ptr, source.Length);
             using var deflate = new DeflateStream(sourceStream, CompressionMode.Decompress);
             int totalRead = 0;
+#if NET6_0_OR_GREATER
             while (totalRead < destination.Length)
             {
                 int read = deflate.Read(destination.Slice(totalRead));
                 if (read == 0) break;
                 totalRead += read;
             }
+#else
+            byte[] tempBuffer = new byte[destination.Length];
+            while (totalRead < tempBuffer.Length)
+            {
+                int read = deflate.Read(tempBuffer, totalRead, tempBuffer.Length - totalRead);
+                if (read == 0) break;
+                totalRead += read;
+            }
+            tempBuffer.AsSpan(0, totalRead).CopyTo(destination);
+#endif
             return totalRead;
         }
     }

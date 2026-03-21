@@ -36,7 +36,11 @@ public sealed class AzureBlobSequentialFile : ISequentialFile
     /// </param>
     public AzureBlobSequentialFile(BlockBlobClient blobClient, int blockSize = DefaultBlockSize)
     {
+#if NET8_0_OR_GREATER
         ArgumentOutOfRangeException.ThrowIfLessThan(blockSize, 1);
+#else
+        if (blockSize < 1) throw new ArgumentOutOfRangeException(nameof(blockSize));
+#endif
         _blobClient = blobClient;
         _blockSize = blockSize;
         _buffer = new byte[blockSize];
@@ -48,7 +52,11 @@ public sealed class AzureBlobSequentialFile : ISequentialFile
     /// <inheritdoc/>
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         int remaining = data.Length;
         int sourceOffset = 0;
@@ -72,7 +80,11 @@ public sealed class AzureBlobSequentialFile : ISequentialFile
     /// <inheritdoc/>
     public async ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         // Stage any remaining buffered data
         if (_bufferPosition > 0)

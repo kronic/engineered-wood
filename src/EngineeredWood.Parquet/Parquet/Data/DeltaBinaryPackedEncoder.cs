@@ -142,8 +142,12 @@ internal sealed class DeltaBinaryPackedEncoder
                     ulong remainder = unchecked((ulong)(deltas[i] - minDelta));
                     if (remainder > maxRemainder) maxRemainder = remainder;
                 }
-
+
+#if NET8_0_OR_GREATER
                 bitWidths[mb] = maxRemainder == 0 ? (byte)0 : (byte)(64 - ulong.LeadingZeroCount(maxRemainder));
+#else
+                bitWidths[mb] = maxRemainder == 0 ? (byte)0 : (byte)(64 - BitPolyfills.LeadingZeroCount(maxRemainder));
+#endif
             }
 
             // Write bit widths

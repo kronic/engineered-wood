@@ -52,7 +52,11 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
     public async ValueTask<FileMetaData> ReadMetadataAsync(
         CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_metadata != null)
             return _metadata;
@@ -96,7 +100,11 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
     public async ValueTask<SchemaDescriptor> GetSchemaAsync(
         CancellationToken cancellationToken = default)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_schema != null)
             return _schema;
@@ -509,6 +517,7 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
         var results = new ColumnResult[ctx.Count];
 
+#if NET8_0_OR_GREATER
         await Parallel.ForEachAsync(
             Enumerable.Range(0, ctx.Count),
             new ParallelOptions
@@ -526,6 +535,19 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                     ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
                     ctx.HasNestedColumns);
             }).ConfigureAwait(false);
+#else
+        for (int i = 0; i < ctx.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var buffer = await _file.ReadAsync(ctx.Ranges[i], cancellationToken)
+                .ConfigureAwait(false);
+
+            results[i] = ColumnChunkReader.ReadColumn(
+                buffer.Memory.Span, ctx.Columns[i],
+                ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
+                ctx.HasNestedColumns);
+        }
+#endif
 
         return AssembleRecordBatch(ctx, results);
     }
@@ -535,7 +557,11 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
         IReadOnlyList<string>? columnNames,
         CancellationToken cancellationToken)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         var metadata = await ReadMetadataAsync(cancellationToken).ConfigureAwait(false);
         var schema = await GetSchemaAsync(cancellationToken).ConfigureAwait(false);
@@ -773,8 +799,13 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
         };
     }
 
+#if NET8_0_OR_GREATER
     [GeneratedRegex(@"version\s+(\d+)\.(\d+)\.(\d+)")]
     private static partial Regex VersionRegex();
+#else
+    private static readonly Regex VersionRegexInstance = new(@"version\s+(\d+)\.(\d+)\.(\d+)", RegexOptions.Compiled);
+    private static Regex VersionRegex() => VersionRegexInstance;
+#endif
 
     /// <summary>
     /// Detects whether the file was written by a parquet-mr version affected by PARQUET-816,

@@ -219,8 +219,13 @@ internal ref struct RleBitPackedDecoder
                         destination[offset + 5] = (byte)((packed >> 5) & 1);
                         destination[offset + 6] = (byte)((packed >> 6) & 1);
                         destination[offset + 7] = (byte)((packed >> 7) & 1);
+#if NET8_0_OR_GREATER
                         if (matchValue == 1)      matchCount += BitOperations.PopCount(packed);
                         else if (matchValue == 0) matchCount += 8 - BitOperations.PopCount(packed);
+#else
+                        if (matchValue == 1)      matchCount += BitPolyfills.PopCount(packed);
+                        else if (matchValue == 0) matchCount += 8 - BitPolyfills.PopCount(packed);
+#endif
                         offset += 8;
                         _bitOffset += 8;
                         _remaining -= 8;
@@ -289,8 +294,13 @@ internal ref struct RleBitPackedDecoder
                         destination[offset + 7] = (packed >> 7) & 1;
                         // For maxDefLevel == 1 (most common case), PopCount counts set bits.
                         // For maxDefLevel == 0 the whole column is non-nullable and this path isn't taken.
+#if NET8_0_OR_GREATER
                         if (matchValue == 1)      matchCount += BitOperations.PopCount(packed);
                         else if (matchValue == 0) matchCount += 8 - BitOperations.PopCount(packed);
+#else
+                        if (matchValue == 1)      matchCount += BitPolyfills.PopCount(packed);
+                        else if (matchValue == 0) matchCount += 8 - BitPolyfills.PopCount(packed);
+#endif
                         offset += 8;
                         _bitOffset += 8;
                         _remaining -= 8;

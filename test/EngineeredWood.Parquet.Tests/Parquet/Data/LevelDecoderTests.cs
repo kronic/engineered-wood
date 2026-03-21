@@ -23,7 +23,11 @@ public class LevelDecoderTests
         // RLE: header = (4 << 1) | 0 = 8, value = 1 (bit width 1, 1 byte)
         byte[] rleData = [8, 1];
         byte[] data = new byte[4 + rleData.Length];
+#if NET8_0_OR_GREATER
         BitConverter.TryWriteBytes(data.AsSpan(0), rleData.Length);
+#else
+        Buffer.BlockCopy(BitConverter.GetBytes(rleData.Length), 0, data, 0, 4);
+#endif
         rleData.CopyTo(data.AsSpan(4));
 
         var levels = new byte[4];

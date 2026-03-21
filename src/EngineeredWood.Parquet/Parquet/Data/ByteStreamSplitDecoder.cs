@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
+#if NET8_0_OR_GREATER
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+#endif
 
 namespace EngineeredWood.Parquet.Data;
 
@@ -16,38 +18,47 @@ internal static class ByteStreamSplitDecoder
 {
     public static void DecodeFloats(ReadOnlySpan<byte> data, Span<float> destination, int count)
     {
+#if NET8_0_OR_GREATER
         if (Avx2.IsSupported && count >= Vector256<byte>.Count)
             UnsplitAvx2_4(data, MemoryMarshal.AsBytes(destination), count);
         else
+#endif
             Unsplit(data, MemoryMarshal.AsBytes(destination), count, sizeof(float));
     }
 
     public static void DecodeDoubles(ReadOnlySpan<byte> data, Span<double> destination, int count)
     {
+#if NET8_0_OR_GREATER
         if (Avx2.IsSupported && count >= Vector256<byte>.Count)
             UnsplitAvx2_8(data, MemoryMarshal.AsBytes(destination), count);
         else
+#endif
             Unsplit(data, MemoryMarshal.AsBytes(destination), count, sizeof(double));
     }
 
     public static void DecodeInt32s(ReadOnlySpan<byte> data, Span<int> destination, int count)
     {
+#if NET8_0_OR_GREATER
         if (Avx2.IsSupported && count >= Vector256<byte>.Count)
             UnsplitAvx2_4(data, MemoryMarshal.AsBytes(destination), count);
         else
+#endif
             Unsplit(data, MemoryMarshal.AsBytes(destination), count, sizeof(int));
     }
 
     public static void DecodeInt64s(ReadOnlySpan<byte> data, Span<long> destination, int count)
     {
+#if NET8_0_OR_GREATER
         if (Avx2.IsSupported && count >= Vector256<byte>.Count)
             UnsplitAvx2_8(data, MemoryMarshal.AsBytes(destination), count);
         else
+#endif
             Unsplit(data, MemoryMarshal.AsBytes(destination), count, sizeof(long));
     }
 
     public static void DecodeFixedLenByteArrays(ReadOnlySpan<byte> data, Span<byte> destination, int count, int typeLength)
     {
+#if NET8_0_OR_GREATER
         if (Avx2.IsSupported && count >= Vector256<byte>.Count && (typeLength == 4 || typeLength == 8))
         {
             if (typeLength == 4)
@@ -56,11 +67,13 @@ internal static class ByteStreamSplitDecoder
                 UnsplitAvx2_8(data, destination, count);
         }
         else
+#endif
         {
             Unsplit(data, destination, count, typeLength);
         }
     }
 
+#if NET8_0_OR_GREATER
     /// <summary>
     /// AVX2 unsplit for 4-byte types (float, int32). Processes 32 values per iteration
     /// by loading 32 bytes from each of 4 streams, then interleaving with unpack instructions.
@@ -221,6 +234,7 @@ internal static class ByteStreamSplitDecoder
                 destination[off + s] = data[streamOffsets[s] + i];
         }
     }
+#endif
 
     private static void Unsplit(ReadOnlySpan<byte> data, Span<byte> destination, int count, int width)
     {

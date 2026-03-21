@@ -362,7 +362,11 @@ internal static class ColumnChunkWriter
         byte[] headerBytes = MetadataEncoder.EncodePageHeader(pageHeader);
         int pageSize = headerBytes.Length + compressedLen;
 
+#if NET8_0_OR_GREATER
         output.Write(headerBytes);
+#else
+        output.Write(headerBytes, 0, headerBytes.Length);
+#endif
         output.Write(t_compressBuffer!, 0, compressedLen);
 
         totalUncompressed += headerBytes.Length + uncompressedSize;
@@ -427,9 +431,15 @@ internal static class ColumnChunkWriter
 
         byte[] headerBytes = MetadataEncoder.EncodePageHeader(pageHeader);
 
+#if NET8_0_OR_GREATER
         output.Write(headerBytes);
         if (repLevelLen > 0) output.Write(repEncoder!.WrittenSpan);
         if (defLevelLen > 0) output.Write(defEncoder!.WrittenSpan);
+#else
+        output.Write(headerBytes, 0, headerBytes.Length);
+        if (repLevelLen > 0) { var tmp = repEncoder!.WrittenSpan.ToArray(); output.Write(tmp, 0, tmp.Length); }
+        if (defLevelLen > 0) { var tmp = defEncoder!.WrittenSpan.ToArray(); output.Write(tmp, 0, tmp.Length); }
+#endif
         output.Write(t_compressBuffer!, 0, compressedValuesLen);
 
         int uncompressedPageSize = headerBytes.Length + repLevelLen + defLevelLen + uncompressedValuesSize;
@@ -507,7 +517,11 @@ internal static class ColumnChunkWriter
 
         byte[] headerBytes = MetadataEncoder.EncodePageHeader(pageHeader);
 
+#if NET8_0_OR_GREATER
         output.Write(headerBytes);
+#else
+        output.Write(headerBytes, 0, headerBytes.Length);
+#endif
         output.Write(t_compressBuffer!, 0, compressedLen);
 
         totalUncompressed += headerBytes.Length + uncompressedBodySize;
@@ -617,9 +631,15 @@ internal static class ColumnChunkWriter
 
         byte[] headerBytes = MetadataEncoder.EncodePageHeader(pageHeader);
 
+#if NET8_0_OR_GREATER
         output.Write(headerBytes);
         if (repLevelLen > 0) output.Write(repEncoder!.WrittenSpan);
         if (defLevelLen > 0) output.Write(defEncoder!.WrittenSpan);
+#else
+        output.Write(headerBytes, 0, headerBytes.Length);
+        if (repLevelLen > 0) { var tmp = repEncoder!.WrittenSpan.ToArray(); output.Write(tmp, 0, tmp.Length); }
+        if (defLevelLen > 0) { var tmp = defEncoder!.WrittenSpan.ToArray(); output.Write(tmp, 0, tmp.Length); }
+#endif
         output.Write(t_compressBuffer!, 0, compressedValuesLen);
 
         int uncompressedPageSize = headerBytes.Length + repLevelLen + defLevelLen + uncompressedValuesSize;
@@ -699,7 +719,11 @@ internal static class ColumnChunkWriter
 
         byte[] headerBytes = MetadataEncoder.EncodePageHeader(pageHeader);
 
+#if NET8_0_OR_GREATER
         output.Write(headerBytes);
+#else
+        output.Write(headerBytes, 0, headerBytes.Length);
+#endif
         output.Write(t_compressBuffer!, 0, compressedLen);
 
         totalUncompressed += headerBytes.Length + uncompressedBodySize;
@@ -1233,7 +1257,11 @@ internal static class ColumnChunkWriter
 
     /// <summary>Minimum bit width to represent values 0..maxValue.</summary>
     private static int BitWidth(int maxValue) =>
+#if NET8_0_OR_GREATER
         maxValue <= 0 ? 0 : (32 - int.LeadingZeroCount(maxValue));
+#else
+        maxValue <= 0 ? 0 : (32 - BitPolyfills.LeadingZeroCount((uint)maxValue));
+#endif
 
     /// <summary>
     /// Counts the number of rows in a page by counting entries where repLevel &lt; maxRepLevel

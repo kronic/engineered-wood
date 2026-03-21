@@ -1170,9 +1170,13 @@ public class ParquetFileWriterTests : IDisposable
             Assert.NotNull(stats);
             Assert.Equal(0L, stats.NullCount);
             // Min should be -0.0, max should be 3.14
-            float min = BitConverter.ToSingle(stats.MinValue!);
-            float max = BitConverter.ToSingle(stats.MaxValue!);
+            float min = BitConverter.ToSingle(stats.MinValue!, 0);
+            float max = BitConverter.ToSingle(stats.MaxValue!, 0);
+#if NET8_0_OR_GREATER
             Assert.True(float.IsNegative(min) && min == 0f, "Min should be -0.0");
+#else
+            Assert.True(min == 0f && float.NegativeInfinity.Equals(1.0f / min), "Min should be -0.0");
+#endif
             Assert.Equal(3.14f, max);
         });
     }
@@ -1718,8 +1722,8 @@ public class ParquetFileWriterTests : IDisposable
         var metadata = await reader.ReadMetadataAsync();
         var stats = metadata.RowGroups[0].Columns![0].MetaData!.Statistics!;
 
-        var minVal = BitConverter.ToInt32(stats.MinValue!);
-        var maxVal = BitConverter.ToInt32(stats.MaxValue!);
+        var minVal = BitConverter.ToInt32(stats.MinValue!, 0);
+        var maxVal = BitConverter.ToInt32(stats.MaxValue!, 0);
         Assert.Equal(5, minVal);
         Assert.Equal(20, maxVal);
     }
