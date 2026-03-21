@@ -553,6 +553,7 @@ internal sealed class StringBuilder : IColumnBuilder
 
 internal sealed class Date32Builder : IColumnBuilder
 {
+#if NET6_0_OR_GREATER
     private static readonly DateOnly Epoch = new(1970, 1, 1);
     private readonly Apache.Arrow.Date32Array.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader)
@@ -560,6 +561,15 @@ internal sealed class Date32Builder : IColumnBuilder
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(int daysSinceEpoch) => _builder.Append(Epoch.AddDays(daysSinceEpoch));
     public IArrowArray Build(Field field) => _builder.Build();
+#else
+    private static readonly DateTime Epoch = new DateTime(1970, 1, 1);
+    private readonly Apache.Arrow.Date32Array.Builder _builder = new();
+    public void Append(ref AvroBinaryReader reader)
+        => _builder.Append(Epoch.AddDays(reader.ReadInt()));
+    public void AppendNull() => _builder.AppendNull();
+    public void AppendDefault(int daysSinceEpoch) => _builder.Append(Epoch.AddDays(daysSinceEpoch));
+    public IArrowArray Build(Field field) => _builder.Build();
+#endif
 }
 
 internal sealed class Time32MillisBuilder : IColumnBuilder
@@ -623,7 +633,14 @@ internal sealed class TimestampBuilder : IColumnBuilder
         int count = _values.Count;
         var valueBuffer = new byte[count * 8];
         for (int i = 0; i < count; i++)
+        {
+#if NETSTANDARD2_0
+            var bytes = BitConverter.GetBytes(_values[i]);
+            Buffer.BlockCopy(bytes, 0, valueBuffer, i * 8, 8);
+#else
             BitConverter.TryWriteBytes(valueBuffer.AsSpan(i * 8), _values[i]);
+#endif
+        }
 
         var data = new ArrayData(field.DataType, count, _validity.NullCount,
             0, [_validity.BuildBitmap(), new ArrowBuffer(valueBuffer)]);

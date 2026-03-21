@@ -93,7 +93,11 @@ public class DecodeBenchmarks
         for (int i = 0; i < rowCount; i++)
         {
             intB.Append(rng.Next());
+#if NET8_0_OR_GREATER
             longB.Append(rng.NextInt64());
+#else
+            longB.Append(((long)rng.Next() << 32) | (long)(uint)rng.Next());
+#endif
             doubleB.Append(rng.NextDouble() * 1000);
             stringB.Append($"val_{rng.Next(0, 10000)}");
             boolB.Append(rng.Next(2) == 0);
@@ -127,10 +131,21 @@ public class DecodeBenchmarks
             if (i % 5 == 0)
                 valueB.AppendNull();
             else
+#if NET8_0_OR_GREATER
                 valueB.Append(rng.NextInt64());
+#else
+                valueB.Append(((long)rng.Next() << 32) | (long)(uint)rng.Next());
+#endif
             nameB.Append($"name_{rng.Next(0, 10000)}");
+#if NET8_0_OR_GREATER
             tsB.Append(DateTimeOffset.UnixEpoch.AddMicroseconds(rng.NextInt64(0, 2_000_000_000_000L)));
             decimalB.Append(rng.NextInt64(0, 100_000_000) / 100m);
+#else
+            var epoch = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            long tsMicros = (((long)rng.Next() << 32) | (long)(uint)rng.Next()) % 2_000_000_000_000L;
+            tsB.Append(epoch.AddTicks(tsMicros * 10));
+            decimalB.Append((((long)rng.Next() << 32) | (long)(uint)rng.Next()) % 100_000_000 / 100m);
+#endif
         }
 
         var schema = new Apache.Arrow.Schema.Builder()

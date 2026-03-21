@@ -21,9 +21,19 @@ public abstract record SchemaFingerprint
         /// <inheritdoc/>
         public override int GetHashCode()
         {
+#if NET8_0_OR_GREATER
             var hash = new HashCode();
             hash.AddBytes(Value);
             return hash.ToHashCode();
+#else
+            unchecked
+            {
+                int hash = 17;
+                foreach (byte b in Value)
+                    hash = hash * 31 + b;
+                return hash;
+            }
+#endif
         }
     }
 
@@ -38,9 +48,19 @@ public abstract record SchemaFingerprint
         /// <inheritdoc/>
         public override int GetHashCode()
         {
+#if NET8_0_OR_GREATER
             var hash = new HashCode();
             hash.AddBytes(Value);
             return hash.ToHashCode();
+#else
+            unchecked
+            {
+                int hash = 17;
+                foreach (byte b in Value)
+                    hash = hash * 31 + b;
+                return hash;
+            }
+#endif
         }
     }
 

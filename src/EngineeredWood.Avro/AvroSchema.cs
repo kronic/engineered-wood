@@ -40,8 +40,13 @@ public sealed class AvroSchema
         return algorithm switch
         {
             FingerprintAlgorithm.Rabin => new SchemaFingerprint.Rabin(RabinFingerprint.Compute(pcfBytes)),
+#if NET8_0_OR_GREATER
             FingerprintAlgorithm.MD5 => new SchemaFingerprint.MD5(System.Security.Cryptography.MD5.HashData(pcfBytes)),
             FingerprintAlgorithm.SHA256 => new SchemaFingerprint.SHA256(System.Security.Cryptography.SHA256.HashData(pcfBytes)),
+#else
+            FingerprintAlgorithm.MD5 => new SchemaFingerprint.MD5(ComputeHash<System.Security.Cryptography.MD5>(pcfBytes)),
+            FingerprintAlgorithm.SHA256 => new SchemaFingerprint.SHA256(ComputeHash<System.Security.Cryptography.SHA256>(pcfBytes)),
+#endif
             _ => throw new ArgumentOutOfRangeException(nameof(algorithm)),
         };
     }
@@ -76,4 +81,13 @@ public sealed class AvroSchema
         var json = AvroSchemaWriter.ToJson(avroRecord);
         return new AvroSchema(json);
     }
+
+#if !NET8_0_OR_GREATER
+    private static byte[] ComputeHash<T>(byte[] data) where T : System.Security.Cryptography.HashAlgorithm
+    {
+        using var alg = System.Security.Cryptography.HashAlgorithm.Create(typeof(T).Name)
+            ?? throw new InvalidOperationException($"Hash algorithm {typeof(T).Name} not available.");
+        return alg.ComputeHash(data);
+    }
+#endif
 }

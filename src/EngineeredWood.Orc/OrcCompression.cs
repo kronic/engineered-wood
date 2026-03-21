@@ -62,7 +62,11 @@ internal static class OrcCompression
 
             if (isOriginal)
             {
+#if NETSTANDARD2_0
+                output.Write(chunk.ToArray(), 0, chunk.Length);
+#else
                 output.Write(chunk);
+#endif
             }
             else
             {
@@ -113,7 +117,11 @@ internal static class OrcCompression
 
             if (isOriginal)
             {
+#if NETSTANDARD2_0
+                output.Write(chunk.ToArray(), 0, chunk.Length);
+#else
                 output.Write(chunk);
+#endif
             }
             else
             {
@@ -171,7 +179,11 @@ internal static class OrcCompression
                 output.WriteByte((byte)(header & 0xFF));
                 output.WriteByte((byte)((header >> 8) & 0xFF));
                 output.WriteByte((byte)((header >> 16) & 0xFF));
+#if NETSTANDARD2_0
+                output.Write(block.ToArray(), 0, block.Length);
+#else
                 output.Write(block);
+#endif
             }
 
             ArrayPool<byte>.Shared.Return(compBuf);

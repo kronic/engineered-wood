@@ -228,7 +228,7 @@ public sealed class OrcReader : IAsyncDisposable, IDisposable
     {
         if (_ownsReader)
             return _reader.DisposeAsync();
-        return ValueTask.CompletedTask;
+        return default;
     }
 
     public void Dispose()

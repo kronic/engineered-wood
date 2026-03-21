@@ -15,8 +15,8 @@ if (args.Length == 0)
 
 return args[0] switch
 {
-    "create_test_file" => await CreateTestFile(args[1..]),
-    "read_test_file" => await ReadTestFile(args[1..]),
+    "create_test_file" => await CreateTestFile(args.Skip(1).ToArray()),
+    "read_test_file" => await ReadTestFile(args.Skip(1).ToArray()),
     _ => PrintUsage(),
 };
 
@@ -154,8 +154,15 @@ static RecordBatch GenerateRandomBatch(Apache.Arrow.Schema schema, int rowCount,
     for (int c = 0; c < 5; c++)
     {
         var values = new long[rowCount];
+#if NET8_0_OR_GREATER
         RandomNumberGenerator.Fill(
             System.Runtime.InteropServices.MemoryMarshal.AsBytes(values.AsSpan()));
+#else
+        var rngBytes = new byte[rowCount * 8];
+        using (var rng = RandomNumberGenerator.Create())
+            rng.GetBytes(rngBytes);
+        Buffer.BlockCopy(rngBytes, 0, values, 0, rngBytes.Length);
+#endif
         arrays.Add(new Int64Array.Builder().AppendRange(values).Build());
     }
 
@@ -287,7 +294,11 @@ static async Task<int> ReadTestFile(string[] args)
     Console.WriteLine($"MaxBytes:     {(batchBytes.HasValue ? FormatBytes(batchBytes.Value) : "(none)")}");
 
     // Force a GC before we start to get a clean baseline.
+#if NET8_0_OR_GREATER
     GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+#else
+    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+#endif
     long baselineMemory = GC.GetTotalMemory(forceFullCollection: true);
 
     await using var file = new LocalRandomAccessFile(path);
@@ -339,7 +350,11 @@ static async Task<int> ReadTestFile(string[] args)
     }
 
     // Final GC to measure steady-state.
+#if NET8_0_OR_GREATER
     GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+#else
+    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+#endif
     long finalMemory = GC.GetTotalMemory(forceFullCollection: true);
 
     Console.WriteLine();
@@ -496,17 +511,17 @@ static long ParseSize(string s)
     if (s.EndsWith("GB", StringComparison.OrdinalIgnoreCase))
     {
         multiplier = 1L << 30;
-        s = s[..^2];
+        s = s.Substring(0, s.Length - 2);
     }
     else if (s.EndsWith("MB", StringComparison.OrdinalIgnoreCase))
     {
         multiplier = 1L << 20;
-        s = s[..^2];
+        s = s.Substring(0, s.Length - 2);
     }
     else if (s.EndsWith("KB", StringComparison.OrdinalIgnoreCase))
     {
         multiplier = 1L << 10;
-        s = s[..^2];
+        s = s.Substring(0, s.Length - 2);
     }
     return (long)(double.Parse(s.Trim()) * multiplier);
 }

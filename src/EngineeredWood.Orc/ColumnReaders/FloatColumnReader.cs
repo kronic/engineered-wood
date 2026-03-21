@@ -26,7 +26,7 @@ internal sealed class FloatColumnReader : ColumnReader
             for (int i = 0; i < batchSize; i++)
             {
                 if (present == null || present[i])
-                    values[i] = BitConverter.ToSingle(_dataStream.ReadSpan(4));
+                    values[i] = MemoryMarshal.Read<float>(_dataStream.ReadSpan(4));
             }
         }
 
@@ -56,7 +56,7 @@ internal sealed class DoubleColumnReader : ColumnReader
             for (int i = 0; i < batchSize; i++)
             {
                 if (present == null || present[i])
-                    values[i] = BitConverter.ToDouble(_dataStream.ReadSpan(8));
+                    values[i] = MemoryMarshal.Read<double>(_dataStream.ReadSpan(8));
             }
         }
 

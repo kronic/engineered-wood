@@ -21,7 +21,14 @@ internal static class SchemaResolver
             var rf = readerSchema.Fields[i];
             readerFieldIndex[rf.Name] = i;
             foreach (var alias in rf.Aliases)
+            {
+#if NET8_0_OR_GREATER
                 readerFieldIndex.TryAdd(alias, i);
+#else
+                if (!readerFieldIndex.ContainsKey(alias))
+                    readerFieldIndex[alias] = i;
+#endif
+            }
         }
 
         // For each writer field, find the matching reader field

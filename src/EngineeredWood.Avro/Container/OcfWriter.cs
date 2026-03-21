@@ -25,7 +25,13 @@ internal sealed class OcfWriter : IDisposable
     {
         _stream = stream;
         _codec = codec;
+#if NET6_0_OR_GREATER
         _syncMarker = RandomNumberGenerator.GetBytes(16);
+#else
+        _syncMarker = new byte[16];
+        using (var rng = RandomNumberGenerator.Create())
+            rng.GetBytes(_syncMarker);
+#endif
     }
 
     public void WriteHeader(AvroRecordSchema schema)
@@ -34,7 +40,7 @@ internal sealed class OcfWriter : IDisposable
         _headerWritten = true;
 
         // Magic
-        _stream.Write(Magic);
+        _stream.Write(Magic, 0, Magic.Length);
 
         // Metadata map
         var schemaJson = AvroSchemaWriter.ToJson(schema);
@@ -49,7 +55,7 @@ internal sealed class OcfWriter : IDisposable
         WriteMetadataMap(_stream, entries);
 
         // Sync marker
-        _stream.Write(_syncMarker);
+        _stream.Write(_syncMarker, 0, _syncMarker.Length);
     }
 
     /// <summary>
@@ -61,16 +67,16 @@ internal sealed class OcfWriter : IDisposable
         if (_codec == AvroCodec.Null)
         {
             WriteVarLong(_stream, encodedData.Length);
-            _stream.Write(encodedData);
+            WriteSpan(_stream, encodedData);
         }
         else
         {
             _compressBuffer.Reset();
             AvroCompression.Compress(_codec, encodedData, _compressBuffer);
             WriteVarLong(_stream, _compressBuffer.Length);
-            _stream.Write(_compressBuffer.WrittenSpan);
+            WriteSpan(_stream, _compressBuffer.WrittenSpan);
         }
-        _stream.Write(_syncMarker);
+        _stream.Write(_syncMarker, 0, _syncMarker.Length);
     }
 
     /// <summary>
@@ -96,17 +102,17 @@ internal sealed class OcfWriter : IDisposable
         if (_codec == AvroCodec.Null)
         {
             WriteVarLong(_stream, rawData.Length);
-            _stream.Write(rawData);
+            WriteSpan(_stream, rawData);
         }
         else
         {
             _compressBuffer.Reset();
             AvroCompression.Compress(_codec, rawData, _compressBuffer);
             WriteVarLong(_stream, _compressBuffer.Length);
-            _stream.Write(_compressBuffer.WrittenSpan);
+            WriteSpan(_stream, _compressBuffer.WrittenSpan);
         }
         // Sync marker
-        _stream.Write(_syncMarker);
+        _stream.Write(_syncMarker, 0, _syncMarker.Length);
 
         _blockBuffer.Reset();
         _blockObjectCount = 0;
@@ -131,10 +137,10 @@ internal sealed class OcfWriter : IDisposable
         {
             // Write block count
             WriteVarLong(stream, entries.Count);
-            foreach (var (key, value) in entries)
+            foreach (var kvp in entries)
             {
-                WriteAvroString(stream, key);
-                WriteAvroBytes(stream, value);
+                WriteAvroString(stream, kvp.Key);
+                WriteAvroBytes(stream, kvp.Value);
             }
         }
         // Terminate map with 0-count block
@@ -145,13 +151,22 @@ internal sealed class OcfWriter : IDisposable
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(value);
         WriteVarLong(stream, bytes.Length);
-        stream.Write(bytes);
+        stream.Write(bytes, 0, bytes.Length);
     }
 
     private static void WriteAvroBytes(Stream stream, ReadOnlySpan<byte> value)
     {
         WriteVarLong(stream, value.Length);
-        stream.Write(value);
+        WriteSpan(stream, value);
+    }
+
+    private static void WriteSpan(Stream stream, ReadOnlySpan<byte> data)
+    {
+#if NETSTANDARD2_0
+        stream.Write(data.ToArray(), 0, data.Length);
+#else
+        stream.Write(data);
+#endif
     }
 
     private static void WriteVarLong(Stream stream, long value)

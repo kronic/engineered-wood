@@ -249,7 +249,11 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
     private static bool SequenceEquals(ReadOnlySequence<byte> sequence, ReadOnlySpan<byte> expected)
     {
         if (sequence.IsSingleSegment)
+#if NETSTANDARD2_0
+            return sequence.First.Span.SequenceEqual(expected);
+#else
             return sequence.FirstSpan.SequenceEqual(expected);
+#endif
 
         Span<byte> temp = stackalloc byte[16];
         sequence.CopyTo(temp);

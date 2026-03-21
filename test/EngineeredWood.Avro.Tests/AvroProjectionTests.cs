@@ -342,7 +342,11 @@ public class AvroProjectionTests
     {
         var bytes = new byte[offsets.Count * 4];
         for (int i = 0; i < offsets.Count; i++)
+#if NET8_0_OR_GREATER
             BitConverter.TryWriteBytes(bytes.AsSpan(i * 4), offsets[i]);
+#else
+            Buffer.BlockCopy(BitConverter.GetBytes(offsets[i]), 0, bytes, i * 4, 4);
+#endif
         return new ArrowBuffer(bytes);
     }
 }

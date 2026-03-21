@@ -23,7 +23,13 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
     {
         _stream = stream;
         _codec = codec;
+#if NET6_0_OR_GREATER
         _syncMarker = RandomNumberGenerator.GetBytes(16);
+#else
+        _syncMarker = new byte[16];
+        using (var rng = RandomNumberGenerator.Create())
+            rng.GetBytes(_syncMarker);
+#endif
     }
 
     public async ValueTask WriteHeaderAsync(AvroRecordSchema schema, CancellationToken ct = default)
@@ -32,7 +38,7 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         _headerWritten = true;
 
         // Magic
-        await _stream.WriteAsync(Magic, ct).ConfigureAwait(false);
+        await WriteMemoryAsync(Magic, ct).ConfigureAwait(false);
 
         // Metadata map
         var schemaJson = AvroSchemaWriter.ToJson(schema);
@@ -47,7 +53,7 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         await WriteMetadataMapAsync(entries, ct).ConfigureAwait(false);
 
         // Sync marker
-        await _stream.WriteAsync(_syncMarker, ct).ConfigureAwait(false);
+        await WriteMemoryAsync(_syncMarker, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -61,16 +67,16 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         if (_codec == AvroCodec.Null)
         {
             await WriteVarLongAsync(encodedData.Length, ct).ConfigureAwait(false);
-            await _stream.WriteAsync(encodedData, ct).ConfigureAwait(false);
+            await WriteMemoryAsync(encodedData, ct).ConfigureAwait(false);
         }
         else
         {
             _compressBuffer.Reset();
             AvroCompression.Compress(_codec, encodedData.Span, _compressBuffer);
             await WriteVarLongAsync(_compressBuffer.Length, ct).ConfigureAwait(false);
-            await _stream.WriteAsync(_compressBuffer.WrittenMemory, ct).ConfigureAwait(false);
+            await WriteMemoryAsync(_compressBuffer.WrittenMemory, ct).ConfigureAwait(false);
         }
-        await _stream.WriteAsync(_syncMarker, ct).ConfigureAwait(false);
+        await WriteMemoryAsync(_syncMarker, ct).ConfigureAwait(false);
     }
 
     public async ValueTask FinishAsync(CancellationToken ct = default)
@@ -92,10 +98,10 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         {
             // Write block count
             await WriteVarLongAsync(entries.Count, ct).ConfigureAwait(false);
-            foreach (var (key, value) in entries)
+            foreach (var kvp in entries)
             {
-                await WriteAvroStringAsync(key, ct).ConfigureAwait(false);
-                await WriteAvroBytesAsync(value, ct).ConfigureAwait(false);
+                await WriteAvroStringAsync(kvp.Key, ct).ConfigureAwait(false);
+                await WriteAvroBytesAsync(kvp.Value, ct).ConfigureAwait(false);
             }
         }
         // Terminate map with 0-count block
@@ -106,13 +112,13 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(value);
         await WriteVarLongAsync(bytes.Length, ct).ConfigureAwait(false);
-        await _stream.WriteAsync(bytes, ct).ConfigureAwait(false);
+        await WriteMemoryAsync(bytes, ct).ConfigureAwait(false);
     }
 
     private async ValueTask WriteAvroBytesAsync(ReadOnlyMemory<byte> value, CancellationToken ct)
     {
         await WriteVarLongAsync(value.Length, ct).ConfigureAwait(false);
-        await _stream.WriteAsync(value, ct).ConfigureAwait(false);
+        await WriteMemoryAsync(value, ct).ConfigureAwait(false);
     }
 
     private async ValueTask WriteVarLongAsync(long value, CancellationToken ct)
@@ -120,6 +126,16 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         // Encode varint into a small stack buffer, then write async
         var buf = new byte[10]; // max varint size
         int written = Varint.WriteSigned(buf, value);
-        await _stream.WriteAsync(buf.AsMemory(0, written), ct).ConfigureAwait(false);
+        await WriteMemoryAsync(buf.AsMemory(0, written), ct).ConfigureAwait(false);
+    }
+
+    private ValueTask WriteMemoryAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
+#if NETSTANDARD2_0
+        var array = data.ToArray();
+        return new ValueTask(_stream.WriteAsync(array, 0, array.Length, ct));
+#else
+        return _stream.WriteAsync(data, ct);
+#endif
     }
 }

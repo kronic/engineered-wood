@@ -85,8 +85,15 @@ internal static class AvroCompression
         while (true)
         {
             var span = output.GetSpan(4096);
+#if NETSTANDARD2_0
+            var tmp = new byte[4096];
+            int read = decompressionStream.Read(tmp, 0, 4096);
+            if (read == 0) break;
+            tmp.AsSpan(0, read).CopyTo(span);
+#else
             int read = decompressionStream.Read(span[..4096]);
             if (read == 0) break;
+#endif
             output.Advance(read);
         }
     }

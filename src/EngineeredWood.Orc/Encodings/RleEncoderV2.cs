@@ -169,10 +169,18 @@ internal sealed class RleEncoderV2
         int fullClosest = WidthEncoding.GetClosestWidth(fullBitWidth);
 
         // Find the 90th percentile bit width
+#if NETSTANDARD2_0
+        var bitWidths = new int[values.Length];
+#else
         Span<int> bitWidths = values.Length <= 512 ? stackalloc int[values.Length] : new int[values.Length];
+#endif
         for (int i = 0; i < values.Length; i++)
             bitWidths[i] = adjusted[i] == 0 ? 0 : 64 - BitOperations.LeadingZeroCount((ulong)adjusted[i]);
+#if NETSTANDARD2_0
+        Array.Sort(bitWidths);
+#else
         bitWidths.Sort();
+#endif
 
         int p90Index = Math.Max(0, (int)Math.Ceiling(values.Length * 0.9) - 1);
         int p90Width = bitWidths[p90Index];

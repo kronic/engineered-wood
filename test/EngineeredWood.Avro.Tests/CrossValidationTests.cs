@@ -285,8 +285,13 @@ public class CrossValidationTests
 
         // date_col: row 0 = 2024-01-01 = days since epoch
         var dateCol = (Date32Array)batch.Column(1);
+#if NET6_0_OR_GREATER
         Assert.Equal(new DateOnly(2024, 1, 1), dateCol.GetDateOnly(0));
         Assert.Equal(new DateOnly(2024, 1, 2), dateCol.GetDateOnly(1));
+#else
+        Assert.Equal(new DateTime(2024, 1, 1), dateCol.GetDateTime(0));
+        Assert.Equal(new DateTime(2024, 1, 2), dateCol.GetDateTime(1));
+#endif
 
         // time_millis_col: row 0 = 0 (0h 0m 0s)
         var timeMillisCol = (Time32Array)batch.Column(2);
@@ -509,7 +514,11 @@ public class CrossValidationTests
 
         var offsetBytes = new byte[offsets.Count * 4];
         for (int i = 0; i < offsets.Count; i++)
+#if NET8_0_OR_GREATER
             BitConverter.TryWriteBytes(offsetBytes.AsSpan(i * 4), offsets[i]);
+#else
+            Buffer.BlockCopy(BitConverter.GetBytes(offsets[i]), 0, offsetBytes, i * 4, 4);
+#endif
 
         var listArray = new ListArray(new ListType(StringType.Default),
             3, new ArrowBuffer(offsetBytes), valueBuilder.Build(), ArrowBuffer.Empty);

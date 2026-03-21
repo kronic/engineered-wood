@@ -22,7 +22,7 @@ public class AvroSchemaParserTests
     [InlineData("\"string\"", "String")]
     public void Parse_AllPrimitives(string json, string expectedType)
     {
-        var expected = Enum.Parse<AvroType>(expectedType);
+        var expected = (AvroType)Enum.Parse(typeof(AvroType), expectedType);
         var schema = AvroSchemaParser.Parse(json);
         Assert.Equal(expected, schema.Type);
     }

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using EngineeredWood.Buffers;
 using EngineeredWood.Encodings;
 
@@ -40,7 +41,11 @@ internal sealed class AvroBinaryWriter
     public void WriteFloat(float value)
     {
         var span = _buffer.GetSpan(4);
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteSingleLittleEndian(span, value);
+#else
+        MemoryMarshal.Write(span, ref value);
+#endif
         _buffer.Advance(4);
     }
 
@@ -48,7 +53,11 @@ internal sealed class AvroBinaryWriter
     public void WriteDouble(double value)
     {
         var span = _buffer.GetSpan(8);
+#if NET8_0_OR_GREATER
         BinaryPrimitives.WriteDoubleLittleEndian(span, value);
+#else
+        MemoryMarshal.Write(span, ref value);
+#endif
         _buffer.Advance(8);
     }
 
@@ -63,7 +72,12 @@ internal sealed class AvroBinaryWriter
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
         WriteLong(byteCount);
         var span = _buffer.GetSpan(byteCount);
+#if NETSTANDARD2_0
+        var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+        bytes.AsSpan().CopyTo(span);
+#else
         System.Text.Encoding.UTF8.GetBytes(value, span);
+#endif
         _buffer.Advance(byteCount);
     }
 

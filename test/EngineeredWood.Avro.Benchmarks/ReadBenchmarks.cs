@@ -128,7 +128,11 @@ public class ReadBenchmarks
         for (int i = 0; i < rowCount; i++)
         {
             intBuilder.Append(rng.Next());
+#if NET8_0_OR_GREATER
             longBuilder.Append(rng.NextInt64());
+#else
+            longBuilder.Append(((long)rng.Next() << 32) | (long)(uint)rng.Next());
+#endif
             doubleBuilder.Append(rng.NextDouble() * 1000);
             stringBuilder.Append($"value_{rng.Next(0, 10000)}");
             boolBuilder.Append(rng.Next(2) == 0);

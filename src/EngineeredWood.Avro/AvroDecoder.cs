@@ -52,7 +52,11 @@ public sealed class AvroDecoder : IDisposable
     /// </summary>
     public RecordBatch? Decode(ReadOnlySpan<byte> message)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         // Parse fingerprint and extract payload
         SchemaFingerprint fingerprint;
@@ -112,7 +116,11 @@ public sealed class AvroDecoder : IDisposable
     /// </summary>
     public RecordBatch? Flush()
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
         return FlushInternal();
     }
 

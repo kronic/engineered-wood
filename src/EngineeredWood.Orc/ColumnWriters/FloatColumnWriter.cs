@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Apache.Arrow;
 using EngineeredWood.Orc.Encodings;
 using EngineeredWood.Orc.Proto;
@@ -28,7 +29,7 @@ internal sealed class FloatColumnWriter : ColumnWriter
             if (v < _min) _min = v;
             if (v > _max) _max = v;
             _sum += v;
-            BitConverter.TryWriteBytes(tmp, v);
+            MemoryMarshal.Write(tmp, ref v);
             _dataStream.Write(tmp);
         }
     }
@@ -113,7 +114,7 @@ internal sealed class DoubleColumnWriter : ColumnWriter
             if (v < _min) _min = v;
             if (v > _max) _max = v;
             _sum += v;
-            BitConverter.TryWriteBytes(tmp, v);
+            MemoryMarshal.Write(tmp, ref v);
             _dataStream.Write(tmp);
         }
     }

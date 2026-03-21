@@ -183,8 +183,15 @@ internal sealed class OcfReader : IDisposable
         int total = 0;
         while (total < buffer.Length)
         {
+#if NETSTANDARD2_0
+            var tmp = new byte[buffer.Length - total];
+            int read = stream.Read(tmp, 0, tmp.Length);
+            if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
+            tmp.AsSpan(0, read).CopyTo(buffer.Slice(total));
+#else
             int read = stream.Read(buffer[total..]);
             if (read == 0) throw new EndOfStreamException("Unexpected end of stream.");
+#endif
             total += read;
         }
     }

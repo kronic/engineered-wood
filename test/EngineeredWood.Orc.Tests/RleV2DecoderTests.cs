@@ -95,7 +95,11 @@ public class RleV2DecoderTests
         foreach (int count in new[] { 3, 5, 7, 10 })
         {
             var original = new long[count];
+#if NET8_0_OR_GREATER
             Array.Fill(original, 42L);
+#else
+            for (int i = 0; i < original.Length; i++) original[i] = 42L;
+#endif
 
             var buf = new GrowableBuffer();
             var encoder = new RleEncoderV2(buf, signed: true);

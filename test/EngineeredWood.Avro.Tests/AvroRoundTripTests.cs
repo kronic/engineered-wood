@@ -449,9 +449,15 @@ public class AvroRoundTripTests
             .Build();
 
         var builder = new Date32Array.Builder();
+#if NET6_0_OR_GREATER
         builder.Append(new DateOnly(2024, 1, 15));
         builder.Append(new DateOnly(1970, 1, 1));
         builder.Append(new DateOnly(2000, 6, 30));
+#else
+        builder.Append(new DateTime(2024, 1, 15));
+        builder.Append(new DateTime(1970, 1, 1));
+        builder.Append(new DateTime(2000, 6, 30));
+#endif
 
         var batch = new RecordBatch(schema, [builder.Build()], 3);
         var result = WriteAndRead(schema, batch, AvroCodec.Null);
@@ -460,7 +466,11 @@ public class AvroRoundTripTests
         var src = (Date32Array)batch.Column(0);
         var dst = (Date32Array)result.Column(0);
         for (int i = 0; i < 3; i++)
+#if NET6_0_OR_GREATER
             Assert.Equal(src.GetDateOnly(i), dst.GetDateOnly(i));
+#else
+            Assert.Equal(src.GetDateTime(i), dst.GetDateTime(i));
+#endif
     }
 
     [Fact]
@@ -472,7 +482,11 @@ public class AvroRoundTripTests
             .Build();
 
         var builder = new TimestampArray.Builder(tsType);
+#if NET8_0_OR_GREATER
         builder.Append(DateTimeOffset.UnixEpoch);
+#else
+        builder.Append(new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero));
+#endif
         builder.Append(new DateTimeOffset(2024, 6, 15, 12, 30, 0, TimeSpan.Zero));
 
         var batch = new RecordBatch(schema, [builder.Build()], 2);
@@ -529,7 +543,11 @@ public class AvroRoundTripTests
     {
         var bytes = new byte[offsets.Count * 4];
         for (int i = 0; i < offsets.Count; i++)
+#if NET8_0_OR_GREATER
             BitConverter.TryWriteBytes(bytes.AsSpan(i * 4), offsets[i]);
+#else
+            Buffer.BlockCopy(BitConverter.GetBytes(offsets[i]), 0, bytes, i * 4, 4);
+#endif
         return new ArrowBuffer(bytes);
     }
 }

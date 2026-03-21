@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using EngineeredWood.Avro.Schema;
 using EngineeredWood.Encodings;
 
@@ -36,7 +37,11 @@ internal ref struct AvroBinaryReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public float ReadFloat()
     {
+#if NET8_0_OR_GREATER
         var value = BinaryPrimitives.ReadSingleLittleEndian(_data.Slice(_pos));
+#else
+        var value = MemoryMarshal.Read<float>(_data.Slice(_pos));
+#endif
         _pos += 4;
         return value;
     }
@@ -44,7 +49,11 @@ internal ref struct AvroBinaryReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double ReadDouble()
     {
+#if NET8_0_OR_GREATER
         var value = BinaryPrimitives.ReadDoubleLittleEndian(_data.Slice(_pos));
+#else
+        var value = MemoryMarshal.Read<double>(_data.Slice(_pos));
+#endif
         _pos += 8;
         return value;
     }
@@ -60,7 +69,15 @@ internal ref struct AvroBinaryReader
 
     public ReadOnlySpan<byte> ReadStringBytes() => ReadBytes();
 
-    public string ReadString() => System.Text.Encoding.UTF8.GetString(ReadStringBytes());
+    public string ReadString()
+    {
+        var bytes = ReadStringBytes();
+#if NETSTANDARD2_0
+        return System.Text.Encoding.UTF8.GetString(bytes.ToArray());
+#else
+        return System.Text.Encoding.UTF8.GetString(bytes);
+#endif
+    }
 
     public ReadOnlySpan<byte> ReadFixed(int size)
     {

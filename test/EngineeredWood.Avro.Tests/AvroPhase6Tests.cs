@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
@@ -562,7 +563,11 @@ public class AvroPhase6Tests
     {
         // Write as 16-byte little-endian two's complement
         dest.Clear();
+#if NET8_0_OR_GREATER
         BitConverter.TryWriteBytes(dest, unscaledValue);
+#else
+        MemoryMarshal.Write(dest, ref unscaledValue);
+#endif
         if (unscaledValue < 0)
             dest[8..].Fill(0xFF); // sign-extend
     }
@@ -571,8 +576,13 @@ public class AvroPhase6Tests
     {
         var bytes = array.GetBytes(index);
         // Read 16-byte LE value
+#if NET8_0_OR_GREATER
         long low = BitConverter.ToInt64(bytes);
         long high = BitConverter.ToInt64(bytes[8..]);
+#else
+        long low = MemoryMarshal.Read<long>(bytes);
+        long high = MemoryMarshal.Read<long>(bytes.Slice(8));
+#endif
         // For values that fit in a long, high should be sign extension
         if (expected >= 0)
         {

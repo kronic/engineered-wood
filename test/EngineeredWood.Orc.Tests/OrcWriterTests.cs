@@ -1202,7 +1202,11 @@ public class OrcWriterTests
             var schema = new Schema([new Field("ts", tsType, nullable: false)], null);
 
             var ts1 = new DateTimeOffset(2024, 1, 15, 12, 30, 0, TimeSpan.Zero);
+#if NET8_0_OR_GREATER
             var ts2 = DateTimeOffset.UnixEpoch;
+#else
+            var ts2 = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero);
+#endif
             var ts3 = new DateTimeOffset(2024, 6, 15, 8, 0, 0, 500, TimeSpan.Zero).AddTicks(1234); // sub-ms precision
 
             await using (var writer = OrcWriter.Create(path, schema, new OrcWriterOptions { Compression = CompressionKind.None }))
@@ -3156,12 +3160,20 @@ public class OrcWriterTests
                 // Build manually using the nanos value
                 var arr = new TimestampArray.Builder(tsType);
                 // Use DateTimeOffset with tick precision (100ns)
+#if NET6_0_OR_GREATER
                 var dt = new DateTimeOffset(2024, 1, 15, 12, 30, 0, 123, 456, TimeSpan.Zero).AddTicks(7); // +700ns ≈ 789
+#else
+                var dt = new DateTimeOffset(2024, 1, 15, 12, 30, 0, 123, TimeSpan.Zero).AddTicks(4560 + 7); // microseconds as ticks + 700ns
+#endif
                 arr.Append(dt);
                 // Pure millisecond value
                 arr.Append(new DateTimeOffset(2024, 1, 15, 12, 30, 0, 500, TimeSpan.Zero));
                 // Pure microsecond value
+#if NET6_0_OR_GREATER
                 arr.Append(new DateTimeOffset(2024, 1, 15, 12, 30, 0, 0, 250, TimeSpan.Zero));
+#else
+                arr.Append(new DateTimeOffset(2024, 1, 15, 12, 30, 0, 0, TimeSpan.Zero).AddTicks(2500));
+#endif
                 await writer.WriteBatchAsync(new RecordBatch(schema, [arr.Build()], 3));
             }
             await using var reader = await OrcReader.OpenAsync(path);

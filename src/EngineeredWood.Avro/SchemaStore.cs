@@ -25,7 +25,11 @@ public sealed class SchemaStore
     /// </summary>
     public SchemaFingerprint Register(AvroSchema schema)
     {
+#if NET8_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(schema);
+#else
+        if (schema is null) throw new ArgumentNullException(nameof(schema));
+#endif
         var fingerprint = schema.ComputeFingerprint(Algorithm);
         _schemas[fingerprint] = schema;
         return fingerprint;
@@ -36,8 +40,13 @@ public sealed class SchemaStore
     /// </summary>
     public void Set(SchemaFingerprint fingerprint, AvroSchema schema)
     {
+#if NET8_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(fingerprint);
         ArgumentNullException.ThrowIfNull(schema);
+#else
+        if (fingerprint is null) throw new ArgumentNullException(nameof(fingerprint));
+        if (schema is null) throw new ArgumentNullException(nameof(schema));
+#endif
         _schemas[fingerprint] = schema;
     }
 
@@ -47,8 +56,13 @@ public sealed class SchemaStore
     /// <returns>The schema if found; otherwise <c>null</c>.</returns>
     public AvroSchema? Lookup(SchemaFingerprint fingerprint)
     {
+#if NET8_0_OR_GREATER
         ArgumentNullException.ThrowIfNull(fingerprint);
         return _schemas.GetValueOrDefault(fingerprint);
+#else
+        if (fingerprint is null) throw new ArgumentNullException(nameof(fingerprint));
+        return _schemas.TryGetValue(fingerprint, out var schema) ? schema : null;
+#endif
     }
 
     /// <summary>

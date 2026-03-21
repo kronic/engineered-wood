@@ -71,7 +71,14 @@ internal sealed class PromotingBytesToStringBuilder : IColumnBuilder
 {
     private readonly Apache.Arrow.StringArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader)
-        => _builder.Append(System.Text.Encoding.UTF8.GetString(reader.ReadBytes()));
+    {
+        var bytes = reader.ReadBytes();
+#if NETSTANDARD2_0
+        _builder.Append(System.Text.Encoding.UTF8.GetString(bytes.ToArray()));
+#else
+        _builder.Append(System.Text.Encoding.UTF8.GetString(bytes));
+#endif
+    }
     public void AppendNull() => _builder.AppendNull();
     public IArrowArray Build(Field field) => _builder.Build();
 }

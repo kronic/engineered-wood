@@ -85,7 +85,11 @@ public class AvroAsyncTests
             batches.Add(new RecordBatch(schema, [builder.Build()], 10));
         }
 
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         var writer = await new AvroWriterBuilder(schema).BuildAsync(ms);
         await using (writer)
         {
@@ -124,7 +128,11 @@ public class AvroAsyncTests
         for (int i = 0; i < 5; i++) builder.Append(i);
         var batch = new RecordBatch(schema, [builder.Build()], 5);
 
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         var writer = await new AvroWriterBuilder(schema).BuildAsync(ms);
         await using (writer)
         {
@@ -165,7 +173,11 @@ public class AvroAsyncTests
             .Field(new Field("x", Int32Type.Default, false))
             .Build();
 
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         var writer = await new AvroWriterBuilder(schema)
             .WithCompression(AvroCodec.Deflate)
             .BuildAsync(ms);
@@ -195,7 +207,11 @@ public class AvroAsyncTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
 
         // Building the writer with a cancelled token should throw
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -216,7 +232,11 @@ public class AvroAsyncTests
         var batch = new RecordBatch(schema, [builder.Build()], 10);
 
         // Write async
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         var writer = await new AvroWriterBuilder(schema).BuildAsync(ms);
         await using (writer)
         {
@@ -244,7 +264,11 @@ public class AvroAsyncTests
         var batch = new RecordBatch(schema, [builder.Build()], 10);
 
         // Write sync
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         using (var writer = new AvroWriterBuilder(schema).Build(ms))
         {
             writer.Write(batch);
@@ -265,7 +289,11 @@ public class AvroAsyncTests
     private static async ValueTask<RecordBatch> WriteAndReadAsync(
         Apache.Arrow.Schema schema, RecordBatch batch, AvroCodec codec)
     {
+#if NET8_0_OR_GREATER
         await using var ms = new MemoryStream();
+#else
+        using var ms = new MemoryStream();
+#endif
         var writer = await new AvroWriterBuilder(schema)
             .WithCompression(codec)
             .BuildAsync(ms);

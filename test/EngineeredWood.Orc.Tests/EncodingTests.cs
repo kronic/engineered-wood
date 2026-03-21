@@ -130,7 +130,11 @@ public class ByteRleTests
         var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[10];
+#if NET8_0_OR_GREATER
         Array.Fill(input, (byte)0xAB);
+#else
+        for (int i = 0; i < input.Length; i++) input[i] = 0xAB;
+#endif
         encoder.WriteValues(input);
         encoder.Flush();
 
@@ -212,7 +216,11 @@ public class ByteRleTests
         var encoder = new ByteRleEncoder(buf);
 
         var input = new byte[130];
+#if NET8_0_OR_GREATER
         Array.Fill(input, (byte)0xCC);
+#else
+        for (int i = 0; i < input.Length; i++) input[i] = 0xCC;
+#endif
         encoder.WriteValues(input);
         encoder.Flush();
 
@@ -320,7 +328,11 @@ public class BooleanEncoderDecoderTests
         var encoder = new BooleanEncoder(buf);
 
         var input = new bool[10];
+#if NET8_0_OR_GREATER
         Array.Fill(input, true);
+#else
+        for (int i = 0; i < input.Length; i++) input[i] = true;
+#endif
         encoder.WriteValues(input);
         encoder.Flush();
 

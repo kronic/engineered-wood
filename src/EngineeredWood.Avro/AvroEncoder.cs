@@ -40,8 +40,13 @@ public sealed class AvroEncoder : IDisposable
     /// </summary>
     public void Encode(RecordBatch batch)
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(batch);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+        if (batch is null) throw new ArgumentNullException(nameof(batch));
+#endif
 
         var writer = new AvroBinaryWriter(_outputBuffer);
 
@@ -59,7 +64,11 @@ public sealed class AvroEncoder : IDisposable
     /// </summary>
     public EncodedRows Flush()
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
 
         if (_rowOffsets.Count == 0)
             return new EncodedRows([], [0]);

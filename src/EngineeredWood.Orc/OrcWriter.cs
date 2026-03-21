@@ -630,12 +630,12 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
         // Add user metadata
         if (_options.UserMetadata is { Count: > 0 })
         {
-            foreach (var (key, value) in _options.UserMetadata)
+            foreach (var kvp in _options.UserMetadata)
             {
                 footer.Metadata.Add(new UserMetadataItem
                 {
-                    Name = key,
-                    Value = Google.Protobuf.ByteString.CopyFrom(value)
+                    Name = kvp.Key,
+                    Value = Google.Protobuf.ByteString.CopyFrom(kvp.Value)
                 });
             }
         }

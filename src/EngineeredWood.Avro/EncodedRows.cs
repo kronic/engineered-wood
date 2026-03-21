@@ -29,8 +29,13 @@ public sealed class EncodedRows
     {
         get
         {
+#if NET8_0_OR_GREATER
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Count);
+#else
+            if (index < 0) throw new ArgumentOutOfRangeException(nameof(index));
+            if (index >= Count) throw new ArgumentOutOfRangeException(nameof(index));
+#endif
             int start = _offsets[index];
             int length = _offsets[index + 1] - start;
             return _buffer.AsMemory(start, length);
