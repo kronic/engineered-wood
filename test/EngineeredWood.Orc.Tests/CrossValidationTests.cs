@@ -4,7 +4,6 @@ using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using EngineeredWood.Orc.Proto;
-using Xunit.Abstractions;
 
 namespace EngineeredWood.Orc.Tests;
 
@@ -13,10 +12,6 @@ namespace EngineeredWood.Orc.Tests;
 /// </summary>
 public class CrossValidationTests
 {
-    private readonly ITestOutputHelper Output;
-
-    public CrossValidationTests(ITestOutputHelper output) => Output = output;
-
     private static string GetTempPath() => Path.Combine(Path.GetTempPath(), $"storc_xval_{Guid.NewGuid():N}.orc");
 
     private static bool IsPyArrowAvailable()
@@ -200,10 +195,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_Integers()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -236,10 +231,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_StringsDirect()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -270,10 +265,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_WithNulls()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -300,10 +295,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_MultipleTypes()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -352,10 +347,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_StructColumn()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -400,10 +395,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_ListColumn()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -459,10 +454,10 @@ public class CrossValidationTests
         return new Decimal128Array(data);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_DecimalColumn()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -496,10 +491,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_UnionColumn()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -553,10 +548,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_MapColumn()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try
@@ -621,10 +616,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CrossValidate_WithCompression()
     {
-        if (!IsPyArrowAvailable()) { Output.WriteLine("SKIPPED: PyArrow is not installed."); return; }
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
 
         var path = GetTempPath();
         try

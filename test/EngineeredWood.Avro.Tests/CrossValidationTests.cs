@@ -3,7 +3,6 @@ using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
-using Xunit.Abstractions;
 
 namespace EngineeredWood.Avro.Tests;
 
@@ -15,10 +14,6 @@ namespace EngineeredWood.Avro.Tests;
 /// </summary>
 public class CrossValidationTests
 {
-    private readonly ITestOutputHelper Output;
-
-    public CrossValidationTests(ITestOutputHelper output) => Output = output;
-
     private static string TestDataDir =>
         Path.Combine(AppContext.BaseDirectory, "TestData");
 
@@ -332,10 +327,10 @@ public class CrossValidationTests
 
     // ─── Direction 2: EngineeredWood writes → fastavro reads ───
 
-    [Fact]
+    [SkippableFact]
     public void WriteThenReadWithFastavro_Primitives()
     {
-        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
+        Skip.If(!IsFastavroAvailable(), "fastavro is not installed.");
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("int_col", Int32Type.Default, false))
@@ -397,10 +392,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void WriteThenReadWithFastavro_WithNulls()
     {
-        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
+        Skip.If(!IsFastavroAvailable(), "fastavro is not installed.");
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("nullable_int", Int32Type.Default, true))
@@ -437,10 +432,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void WriteThenReadWithFastavro_Enum()
     {
-        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
+        Skip.If(!IsFastavroAvailable(), "fastavro is not installed.");
 
         var dictType = new DictionaryType(Int32Type.Default, StringType.Default, false);
         var arrowSchema = new Apache.Arrow.Schema.Builder()
@@ -496,10 +491,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void WriteThenReadWithFastavro_Array()
     {
-        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
+        Skip.If(!IsFastavroAvailable(), "fastavro is not installed.");
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("tags", new ListType(StringType.Default), false))
@@ -552,10 +547,10 @@ public class CrossValidationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void WriteThenReadWithFastavro_Struct()
     {
-        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
+        Skip.If(!IsFastavroAvailable(), "fastavro is not installed.");
 
         var structType = new StructType([
             new Field("city", StringType.Default, false),
