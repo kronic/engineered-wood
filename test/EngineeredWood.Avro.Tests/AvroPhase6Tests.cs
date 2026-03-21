@@ -4,6 +4,7 @@ using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
+using Xunit.Abstractions;
 
 namespace EngineeredWood.Avro.Tests;
 
@@ -12,6 +13,10 @@ namespace EngineeredWood.Avro.Tests;
 /// </summary>
 public class AvroPhase6Tests
 {
+    private readonly ITestOutputHelper Output;
+
+    public AvroPhase6Tests(ITestOutputHelper output) => Output = output;
+
     private static string TestDataDir =>
         Path.Combine(AppContext.BaseDirectory, "TestData");
 
@@ -447,7 +452,7 @@ public class AvroPhase6Tests
     [Fact]
     public void WriteThenReadWithFastavro_Lz4()
     {
-        if (!IsFastavroAvailable()) return;
+        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("id", Int32Type.Default, false))
@@ -493,7 +498,7 @@ public class AvroPhase6Tests
     [Fact]
     public void WriteThenReadWithFastavro_Uuid()
     {
-        if (!IsFastavroAvailable()) return;
+        if (!IsFastavroAvailable()) { Output.WriteLine("SKIPPED: fastavro is not installed."); return; }
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("uid", StringType.Default, false))
