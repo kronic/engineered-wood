@@ -51,10 +51,13 @@ internal abstract class ColumnReader
     protected static int CountNonNull(bool[]? present, int batchSize)
     {
         if (present == null) return batchSize;
-        int count = 0;
-        for (int i = 0; i < batchSize; i++)
-            if (present[i]) count++;
-        return count;
+        var span = present.AsSpan(0, batchSize);
+        int nonNull = 0;
+
+        foreach (bool v in span)
+            nonNull += v ? 1 : 0;
+
+        return nonNull;
     }
 
     /// <summary>
