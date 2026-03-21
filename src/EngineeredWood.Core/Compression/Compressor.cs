@@ -28,7 +28,7 @@ internal static class Compressor
 #if NET6_0_OR_GREATER
             CompressionCodec.Brotli => BrotliEncoder.GetMaxCompressedLength(inputLength),
 #else
-            CompressionCodec.Brotli => throw new NotSupportedException("Brotli compression is not supported on this platform."),
+            CompressionCodec.Brotli => inputLength + 64, // conservative estimate for BrotliSharpLib
 #endif
             CompressionCodec.Lz4 => LZ4Codec.MaximumOutputSize(inputLength),
             CompressionCodec.Deflate => inputLength + 64,
@@ -96,7 +96,9 @@ internal static class Compressor
             throw new InvalidOperationException("Brotli compression failed.");
         return bytesWritten;
 #else
-        throw new NotSupportedException("Brotli compression is not supported on this platform.");
+        byte[] compressed = BrotliSharpLib.Brotli.CompressBuffer(source.ToArray(), 0, source.Length);
+        compressed.AsSpan().CopyTo(destination);
+        return compressed.Length;
 #endif
     }
 

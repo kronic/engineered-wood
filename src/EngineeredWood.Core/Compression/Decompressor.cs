@@ -84,7 +84,9 @@ internal static class Decompressor
             throw new InvalidDataException("Brotli decompression failed.");
         return bytesWritten;
 #else
-        throw new NotSupportedException("Brotli decompression is not supported on this platform.");
+        byte[] decompressed = BrotliSharpLib.Brotli.DecompressBuffer(source.ToArray(), 0, source.Length);
+        decompressed.AsSpan().CopyTo(destination);
+        return decompressed.Length;
 #endif
     }
 
