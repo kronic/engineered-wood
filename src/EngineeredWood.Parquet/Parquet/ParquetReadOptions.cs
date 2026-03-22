@@ -56,6 +56,14 @@ public sealed class ParquetReadOptions
     public long? MaxBatchByteSize { get; init; }
 
     /// <summary>
+    /// Whether to validate CRC-32C checksums when present in page headers.
+    /// When enabled and a page header contains a <c>crc</c> field, the compressed
+    /// page data is verified before decompression. Mismatches throw
+    /// <see cref="ParquetFormatException"/>. Default is <see langword="false"/>.
+    /// </summary>
+    public bool PageChecksumValidation { get; init; }
+
+    /// <summary>
     /// Shorthand for <c>ByteArrayOutput == ByteArrayOutputKind.ViewType</c>.
     /// When set to <see langword="true"/>, sets <see cref="ByteArrayOutput"/> to
     /// <see cref="ByteArrayOutputKind.ViewType"/>; setting to <see langword="false"/>

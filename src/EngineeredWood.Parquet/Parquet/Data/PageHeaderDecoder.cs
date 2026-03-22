@@ -20,6 +20,7 @@ internal static class PageHeaderDecoder
         PageType? type = null;
         int uncompressedPageSize = 0;
         int compressedPageSize = 0;
+        int? crc = null;
         DataPageHeader? dataPageHeader = null;
         DictionaryPageHeader? dictionaryPageHeader = null;
         DataPageHeaderV2? dataPageHeaderV2 = null;
@@ -42,8 +43,8 @@ internal static class PageHeaderDecoder
                 case 3: // compressed_page_size
                     compressedPageSize = reader.ReadZigZagInt32();
                     break;
-                case 4: // crc (skip)
-                    reader.Skip(fieldType);
+                case 4: // crc (optional i32, CRC-32C of page data)
+                    crc = reader.ReadZigZagInt32();
                     break;
                 case 5: // data_page_header
                     dataPageHeader = ReadDataPageHeader(ref reader);
@@ -74,6 +75,7 @@ internal static class PageHeaderDecoder
             Type = type.Value,
             UncompressedPageSize = uncompressedPageSize,
             CompressedPageSize = compressedPageSize,
+            Crc = crc,
             DataPageHeader = dataPageHeader,
             DictionaryPageHeader = dictionaryPageHeader,
             DataPageHeaderV2 = dataPageHeaderV2,

@@ -144,7 +144,8 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                 results[i] = ColumnChunkReader.ReadColumn(
                     buffers[i].Memory.Span, ctx.Columns[i],
                     ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
-                    ctx.HasNestedColumns);
+                    ctx.HasNestedColumns,
+                    _options.PageChecksumValidation);
             });
 
             return AssembleRecordBatch(ctx, results);
@@ -252,7 +253,8 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                     results[i] = ColumnChunkReader.ReadColumn(
                         buffers[i].Memory.Span, ctx.Columns[i],
                         ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
-                        ctx.HasNestedColumns);
+                        ctx.HasNestedColumns,
+                    _options.PageChecksumValidation);
                 });
                 yield return AssembleRecordBatch(ctx, results);
             }
@@ -336,7 +338,8 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                         pageMaps[i],
                         startPage, endPage,
                         ctx.LeafArrowFields[i],
-                        ctx.HasNestedColumns);
+                        ctx.HasNestedColumns,
+                    _options.PageChecksumValidation);
 
                     int skipRows = batchStartRow - pageStartRow;
                     if (skipRows > 0 || fullResult.Array.Length > actualBatchRows)
@@ -492,7 +495,8 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                 results[i] = ColumnChunkReader.ReadColumn(
                     buffers[i].Memory.Span, ctx.Columns[i],
                     ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
-                    ctx.HasNestedColumns);
+                    ctx.HasNestedColumns,
+                    _options.PageChecksumValidation);
             });
 
             return AssembleRecordBatch(ctx, results);
@@ -534,7 +538,8 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
                 results[i] = ColumnChunkReader.ReadColumn(
                     buffer.Memory.Span, ctx.Columns[i],
                     ctx.Chunks[i].MetaData!, ctx.RowCount, ctx.LeafArrowFields[i],
-                    ctx.HasNestedColumns);
+                    ctx.HasNestedColumns,
+                    _options.PageChecksumValidation);
             }).ConfigureAwait(false);
 #else
         for (int i = 0; i < ctx.Count; i++)

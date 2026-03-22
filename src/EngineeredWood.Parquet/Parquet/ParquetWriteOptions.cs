@@ -109,6 +109,13 @@ public sealed class ParquetWriteOptions
     public IReadOnlyList<Metadata.KeyValue>? KeyValueMetadata { get; init; }
 
     /// <summary>
+    /// Whether to compute and write CRC-32C checksums for each data and dictionary page.
+    /// When enabled, each page header includes a <c>crc</c> field covering the compressed
+    /// page data (excluding the header itself). Default is <see langword="false"/>.
+    /// </summary>
+    public bool PageChecksumEnabled { get; init; }
+
+    /// <summary>
     /// Column names (dotted paths) for which Bloom filters should be written.
     /// <c>null</c> (the default) disables Bloom filter writing for all columns.
     /// Use a <see cref="HashSet{T}"/> for efficient lookup.

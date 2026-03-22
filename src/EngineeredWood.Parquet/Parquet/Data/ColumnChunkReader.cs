@@ -35,7 +35,8 @@ internal static class ColumnChunkReader
         ColumnMetaData columnMeta,
         int rowCount,
         Field arrowField,
-        bool preserveDefLevels = false)
+        bool preserveDefLevels = false,
+        bool validateCrc = false)
     {
         bool isRepeated = column.MaxRepetitionLevel > 0;
         int capacity = isRepeated ? checked((int)columnMeta.NumValues) : rowCount;
@@ -75,6 +76,17 @@ internal static class ColumnChunkReader
 
             var pageData = data.Slice(pos, pageHeader.CompressedPageSize);
             pos += pageHeader.CompressedPageSize;
+
+            // Validate CRC-32C if present and validation is enabled.
+            if (validateCrc && pageHeader.Crc.HasValue)
+            {
+                uint expected = unchecked((uint)pageHeader.Crc.Value);
+                uint actual = ComputeCrc32C(pageData);
+                if (actual != expected)
+                    throw new ParquetFormatException(
+                        $"Page CRC-32C mismatch in column '{string.Join(".", column.Path)}': " +
+                        $"expected 0x{expected:X8}, got 0x{actual:X8}.");
+            }
 
             switch (pageHeader.Type)
             {
@@ -162,7 +174,8 @@ internal static class ColumnChunkReader
         int startPage,
         int endPage,
         Field arrowField,
-        bool preserveDefLevels = false)
+        bool preserveDefLevels = false,
+        bool validateCrc = false)
     {
         bool isRepeated = column.MaxRepetitionLevel > 0;
 
@@ -242,7 +255,8 @@ internal static class ColumnChunkReader
         int startPage,
         int endPage,
         Field arrowField,
-        bool preserveDefLevels = false)
+        bool preserveDefLevels = false,
+        bool validateCrc = false)
     {
         bool isRepeated = column.MaxRepetitionLevel > 0;
 
@@ -1014,5 +1028,14 @@ internal static class ColumnChunkReader
         {
             ArrayPool<int>.Shared.Return(indicesArray);
         }
+    }
+
+    private static uint ComputeCrc32C(ReadOnlySpan<byte> data)
+    {
+        var crc = new System.IO.Hashing.Crc32();
+        crc.Append(data);
+        Span<byte> hash = stackalloc byte[4];
+        crc.GetHashAndReset(hash);
+        return BinaryPrimitives.ReadUInt32LittleEndian(hash);
     }
 }

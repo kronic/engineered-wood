@@ -377,6 +377,9 @@ internal static class ColumnChunkWriter
             Type = PageType.DictionaryPage,
             UncompressedPageSize = uncompressedSize,
             CompressedPageSize = compressedLen,
+            Crc = options.PageChecksumEnabled
+                ? unchecked((int)ComputeCrc32C(t_compressBuffer.AsSpan(0, compressedLen)))
+                : null,
             DictionaryPageHeader = new DictionaryPageHeader
             {
                 NumValues = dictResult.DictionaryCount,
@@ -437,11 +440,22 @@ internal static class ColumnChunkWriter
 
         int numRows = maxRepLevel > 0 ? CountRows(repLevels, rowOffset, numValues, maxRepLevel) : numValues;
 
+        int? pageCrc = null;
+        if (options.PageChecksumEnabled)
+        {
+            var crc = new System.IO.Hashing.Crc32();
+            if (repLevelLen > 0) crc.Append(repEncoder!.WrittenSpan);
+            if (defLevelLen > 0) crc.Append(defEncoder!.WrittenSpan);
+            crc.Append(t_compressBuffer.AsSpan(0, compressedValuesLen));
+            pageCrc = unchecked((int)CrcFinish(crc));
+        }
+
         var pageHeader = new PageHeader
         {
             Type = PageType.DataPageV2,
             UncompressedPageSize = repLevelLen + defLevelLen + uncompressedValuesSize,
             CompressedPageSize = repLevelLen + defLevelLen + compressedValuesLen,
+            Crc = pageCrc,
             DataPageHeaderV2 = new DataPageHeaderV2
             {
                 NumValues = numValues,
@@ -531,6 +545,9 @@ internal static class ColumnChunkWriter
             Type = PageType.DataPage,
             UncompressedPageSize = uncompressedBodySize,
             CompressedPageSize = compressedLen,
+            Crc = options.PageChecksumEnabled
+                ? unchecked((int)ComputeCrc32C(t_compressBuffer.AsSpan(0, compressedLen)))
+                : null,
             DataPageHeader = new DataPageHeader
             {
                 NumValues = numValues,
@@ -640,11 +657,23 @@ internal static class ColumnChunkWriter
         int numNulls = numValues - nonNullCount;
         int numRows = maxRepLevel > 0 ? CountRows(repLevels, offset, numValues, maxRepLevel) : numValues;
 
+        // CRC-32C covers the entire page payload (rep levels + def levels + compressed values).
+        int? pageCrc = null;
+        if (options.PageChecksumEnabled)
+        {
+            var crc = new System.IO.Hashing.Crc32();
+            if (repLevelLen > 0) crc.Append(repEncoder!.WrittenSpan);
+            if (defLevelLen > 0) crc.Append(defEncoder!.WrittenSpan);
+            crc.Append(t_compressBuffer.AsSpan(0, compressedValuesLen));
+            pageCrc = unchecked((int)CrcFinish(crc));
+        }
+
         var pageHeader = new PageHeader
         {
             Type = PageType.DataPageV2,
             UncompressedPageSize = repLevelLen + defLevelLen + uncompressedValuesSize,
             CompressedPageSize = repLevelLen + defLevelLen + compressedValuesLen,
+            Crc = pageCrc,
             DataPageHeaderV2 = new DataPageHeaderV2
             {
                 NumValues = numValues,
@@ -736,6 +765,9 @@ internal static class ColumnChunkWriter
             Type = PageType.DataPage,
             UncompressedPageSize = uncompressedBodySize,
             CompressedPageSize = compressedLen,
+            Crc = options.PageChecksumEnabled
+                ? unchecked((int)ComputeCrc32C(t_compressBuffer.AsSpan(0, compressedLen)))
+                : null,
             DataPageHeader = new DataPageHeader
             {
                 NumValues = numValues,
@@ -1305,5 +1337,21 @@ internal static class ColumnChunkWriter
                 rows++;
         }
         return rows;
+    }
+
+    /// <summary>Computes CRC-32C of a contiguous span.</summary>
+    private static uint ComputeCrc32C(ReadOnlySpan<byte> data)
+    {
+        var crc = new System.IO.Hashing.Crc32();
+        crc.Append(data);
+        return CrcFinish(crc);
+    }
+
+    /// <summary>Extracts the uint32 hash value from a Crc32 instance.</summary>
+    private static uint CrcFinish(System.IO.Hashing.Crc32 crc)
+    {
+        Span<byte> hash = stackalloc byte[4];
+        crc.GetHashAndReset(hash);
+        return BinaryPrimitives.ReadUInt32LittleEndian(hash);
     }
 }

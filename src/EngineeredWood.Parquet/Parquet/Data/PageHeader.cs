@@ -14,6 +14,9 @@ internal sealed class PageHeader
     /// <summary>Compressed page size in bytes (not including the header). Same as uncompressed if no compression.</summary>
     public required int CompressedPageSize { get; init; }
 
+    /// <summary>Optional CRC-32C checksum of the compressed page data (excluding the page header).</summary>
+    public int? Crc { get; init; }
+
     /// <summary>Data page header (V1). Null for non-data pages.</summary>
     public DataPageHeader? DataPageHeader { get; init; }
 

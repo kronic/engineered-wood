@@ -580,6 +580,13 @@ internal static class MetadataEncoder
         writer.WriteFieldHeader(ThriftType.I32, 3);
         writer.WriteZigZagInt32(header.CompressedPageSize);
 
+        // Field 4: crc (optional i32, CRC-32C of page data)
+        if (header.Crc.HasValue)
+        {
+            writer.WriteFieldHeader(ThriftType.I32, 4);
+            writer.WriteZigZagInt32(header.Crc.Value);
+        }
+
         // Field 5: data_page_header (optional)
         if (header.DataPageHeader != null)
         {
