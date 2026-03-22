@@ -32,6 +32,7 @@ internal sealed class ByteColumnWriter : ColumnWriter
             if (val < _min) _min = val;
             if (val > _max) _max = val;
             _sum += val;
+            BloomFilter?.AddLong(val);
             v[0] = (byte)val;
             _encoder.WriteValues(v);
         }

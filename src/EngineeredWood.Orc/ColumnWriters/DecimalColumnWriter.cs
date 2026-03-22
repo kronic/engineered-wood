@@ -47,6 +47,8 @@ internal sealed class DecimalColumnWriter : ColumnWriter
             _hasValues = true;
             if (value < _minLong) _minLong = value;
             if (value > _maxLong) _maxLong = value;
+            if (BloomFilter != null)
+                BloomFilter.AddBytes(System.Text.Encoding.UTF8.GetBytes(FormatDecimal(value, _scale)));
 
             // Zigzag encode and write as varint
             ulong zz = (ulong)((value << 1) ^ (value >> 63));

@@ -60,6 +60,45 @@ public sealed class OrcWriterOptions
     /// Keys are strings, values are byte arrays.
     /// </summary>
     public Dictionary<string, byte[]>? UserMetadata { get; set; }
+
+    /// <summary>
+    /// Column names for which Bloom filters should be written.
+    /// <c>null</c> (the default) disables Bloom filter writing for all columns.
+    /// </summary>
+    public IReadOnlyCollection<string>? BloomFilterColumns { get; set; }
+
+    /// <summary>
+    /// Target false positive probability for Bloom filters. Default is 0.05 (5%).
+    /// </summary>
+    public double BloomFilterFpp { get; set; } = 0.05;
+
+    /// <summary>
+    /// Hash function variant for Bloom filters.
+    /// <see cref="OrcBloomHashVariant.Cpp"/> (default) is compatible with PyArrow and Apache Arrow.
+    /// <see cref="OrcBloomHashVariant.Java"/> is compatible with Hive, Spark, and Presto.
+    /// </summary>
+    public OrcBloomHashVariant BloomFilterHashVariant { get; set; } = OrcBloomHashVariant.Cpp;
+}
+
+/// <summary>
+/// Hash function variant for ORC Bloom filters.
+/// The C++ and Java ORC implementations use incompatible hash functions.
+/// </summary>
+public enum OrcBloomHashVariant
+{
+    /// <summary>
+    /// C++ ORC variant: murmur3_64 (single accumulator) for strings,
+    /// Thomas Wang hash with signed right shifts for integers.
+    /// Compatible with PyArrow, Apache Arrow ORC adapter.
+    /// </summary>
+    Cpp,
+
+    /// <summary>
+    /// Java ORC variant: murmur3_x64_128 (returning h1) for strings,
+    /// Thomas Wang hash with unsigned right shifts for integers.
+    /// Compatible with Hive, Spark, Presto, Trino.
+    /// </summary>
+    Java,
 }
 
 /// <summary>

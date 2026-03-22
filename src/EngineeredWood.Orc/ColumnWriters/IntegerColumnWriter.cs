@@ -37,6 +37,7 @@ internal sealed class IntegerColumnWriter : ColumnWriter
                     if (!a.IsValid(i)) continue;
                     long v16 = a.GetValue(i)!.Value;
                     TrackValue(v16);
+                    BloomFilter?.AddLong(v16);
                     values[written++] = v16;
                     if (written == values.Length) { _encoder.WriteValues(values.Slice(0, written)); written = 0; }
                 }
@@ -47,6 +48,7 @@ internal sealed class IntegerColumnWriter : ColumnWriter
                     if (!a.IsValid(i)) continue;
                     long v32 = a.GetValue(i)!.Value;
                     TrackValue(v32);
+                    BloomFilter?.AddLong(v32);
                     values[written++] = v32;
                     if (written == values.Length) { _encoder.WriteValues(values.Slice(0, written)); written = 0; }
                 }
@@ -57,6 +59,7 @@ internal sealed class IntegerColumnWriter : ColumnWriter
                     if (!a.IsValid(i)) continue;
                     long v64 = a.GetValue(i)!.Value;
                     TrackValue(v64);
+                    BloomFilter?.AddLong(v64);
                     values[written++] = v64;
                     if (written == values.Length) { _encoder.WriteValues(values.Slice(0, written)); written = 0; }
                 }

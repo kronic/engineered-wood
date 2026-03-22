@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections;
 using System.Text.RegularExpressions;
 using Apache.Arrow;
 using EngineeredWood.IO;
@@ -832,6 +833,157 @@ public sealed partial class ParquetFileReader : IAsyncDisposable, IDisposable
 
         // Bug was fixed in 1.2.9
         return major < 1 || (major == 1 && (minor < 2 || (minor == 2 && patch < 9)));
+    }
+
+    /// <summary>
+    /// Returns a <see cref="BitArray"/> indicating which row groups might contain the given value
+    /// in the specified column, based on Bloom filter data. Row groups without a Bloom filter
+    /// for the column are conservatively marked as candidates.
+    /// </summary>
+    /// <param name="column">Column name (dotted path or top-level name for a leaf column).</param>
+    /// <param name="value">The value to probe for. Must be type-compatible with the column's physical type.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="BitArray"/> of length equal to the number of row groups.
+    /// A <c>true</c> bit means the row group might contain the value;
+    /// a <c>false</c> bit means it definitely does not.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// The column name is not found or the value type is incompatible with the column's physical type.
+    /// </exception>
+    public ValueTask<BitArray> GetCandidateRowGroupsAsync(
+        string column, object value,
+        CancellationToken cancellationToken = default)
+    {
+        return GetCandidateRowGroupsAsync(column, new[] { value }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns a <see cref="BitArray"/> indicating which row groups might contain any of the given
+    /// values in the specified column, based on Bloom filter data. Row groups without a Bloom filter
+    /// for the column are conservatively marked as candidates.
+    /// </summary>
+    /// <param name="column">Column name (dotted path or top-level name for a leaf column).</param>
+    /// <param name="values">
+    /// The values to probe for. A row group is marked as a candidate if its Bloom filter indicates
+    /// it might contain <em>any</em> of the values. All values must be type-compatible with the
+    /// column's physical type.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="BitArray"/> of length equal to the number of row groups.
+    /// A <c>true</c> bit means the row group might contain at least one of the values;
+    /// a <c>false</c> bit means it definitely does not contain any of them.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// The column name is not found, no values are provided, or a value type is incompatible
+    /// with the column's physical type.
+    /// </exception>
+    public async ValueTask<BitArray> GetCandidateRowGroupsAsync(
+        string column, IReadOnlyList<object> values,
+        CancellationToken cancellationToken = default)
+    {
+#if NET8_0_OR_GREATER
+        ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
+        if (column is null) throw new ArgumentNullException(nameof(column));
+        if (values is null) throw new ArgumentNullException(nameof(values));
+        if (values.Count == 0)
+            throw new ArgumentException("At least one value must be provided.", nameof(values));
+
+        var metadata = await ReadMetadataAsync(cancellationToken).ConfigureAwait(false);
+        var schema = await GetSchemaAsync(cancellationToken).ConfigureAwait(false);
+
+        // Resolve the column to a leaf column index.
+        int columnIndex = ResolveLeafColumnIndex(schema, column);
+        var physicalType = schema.Columns[columnIndex].PhysicalType;
+
+        // Pre-encode all values.
+        var encodedValues = new byte[values.Count][];
+        for (int i = 0; i < values.Count; i++)
+            encodedValues[i] = BloomFilter.BloomFilterValueEncoder.Encode(values[i], physicalType);
+
+        int numRowGroups = metadata.RowGroups.Count;
+        var result = new BitArray(numRowGroups, true); // default to candidate
+
+        // Collect bloom filter file ranges for all row groups that have one.
+        var rangeIndices = new List<int>(); // row group indices that have bloom filter data
+        var ranges = new List<FileRange>();
+
+        for (int rg = 0; rg < numRowGroups; rg++)
+        {
+            var colMeta = metadata.RowGroups[rg].Columns[columnIndex].MetaData;
+            if (colMeta?.BloomFilterOffset is long offset and > 0)
+            {
+                rangeIndices.Add(rg);
+
+                // If bloom_filter_length is present, use it directly.
+                // Otherwise, read a generous chunk — the Thrift header tells us the actual size.
+                // Clamp to file length to avoid reading past end of file.
+                long length = colMeta.BloomFilterLength ?? Math.Min(4096, _fileLength - offset);
+                ranges.Add(new FileRange(offset, length));
+            }
+        }
+
+        if (ranges.Count == 0)
+            return result; // no bloom filters available
+
+        // Batch-read all bloom filter blocks.
+        var buffers = await _file.ReadRangesAsync(ranges, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            for (int i = 0; i < rangeIndices.Count; i++)
+            {
+                int rg = rangeIndices[i];
+                var span = buffers[i].Memory.Span;
+                var filter = BloomFilter.BloomFilterReader.Parse(span);
+
+                bool anyMatch = false;
+                for (int v = 0; v < encodedValues.Length; v++)
+                {
+                    if (filter.MightContain(encodedValues[v]))
+                    {
+                        anyMatch = true;
+                        break;
+                    }
+                }
+
+                if (!anyMatch)
+                    result[rg] = false;
+            }
+        }
+        finally
+        {
+            for (int i = 0; i < buffers.Count; i++)
+                buffers[i].Dispose();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves a column name to a leaf column index in the schema.
+    /// </summary>
+    private static int ResolveLeafColumnIndex(SchemaDescriptor schema, string column)
+    {
+        // Try matching by dotted path first.
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            if (schema.Columns[i].DottedPath == column)
+                return i;
+        }
+
+        // Try matching a top-level leaf by name.
+        for (int i = 0; i < schema.Columns.Count; i++)
+        {
+            if (schema.Columns[i].Path.Count == 1 && schema.Columns[i].Path[0] == column)
+                return i;
+        }
+
+        throw new ArgumentException($"Column '{column}' was not found in the schema.", nameof(column));
     }
 
     public async ValueTask DisposeAsync()

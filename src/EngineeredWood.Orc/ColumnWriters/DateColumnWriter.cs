@@ -30,6 +30,7 @@ internal sealed class DateColumnWriter : ColumnWriter
             _hasValues = true;
             if (day < _min) _min = day;
             if (day > _max) _max = day;
+            BloomFilter?.AddLong(day);
             v[0] = day;
             _encoder.WriteValues(v);
         }

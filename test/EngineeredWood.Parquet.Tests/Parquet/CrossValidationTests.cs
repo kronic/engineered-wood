@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
@@ -1439,5 +1441,164 @@ public class CrossValidationTests : IDisposable
         await using var file = new LocalSequentialFile(path);
         await using var writer = new ParquetFileWriter(file, ownsFile: false);
         await writer.CloseAsync();
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Bloom filter cross-validation: EW writes → ParquetSharp reads
+    // ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EWWrite_PSRead_BloomFilter_DataIntact()
+    {
+        // Write a Parquet file with bloom filters using EW, then verify
+        // ParquetSharp can read the data correctly (bloom filter blocks
+        // don't corrupt the file structure).
+        var path = TempPath("ew-bloom-xval.parquet");
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("id", Int32Type.Default, nullable: false))
+            .Field(new Field("name", Apache.Arrow.Types.StringType.Default, nullable: false))
+            .Build();
+
+        var ids = new Int32Array.Builder().AppendRange(Enumerable.Range(0, 100)).Build();
+        var names = new StringArray.Builder();
+        for (int i = 0; i < 100; i++) names.Append($"name_{i}");
+        var batch = new RecordBatch(schema, new IArrowArray[] { ids, names.Build() }, 100);
+
+        var options = new ParquetWriteOptions
+        {
+            BloomFilterColumns = new HashSet<string> { "id", "name" },
+            BloomFilterFpp = 0.05,
+        };
+
+        await WriteEW(path, batch, options);
+
+        // ParquetSharp should read the file without errors.
+        using var reader = new ParquetSharp.ParquetFileReader(path);
+        var fileMeta = reader.FileMetaData;
+        Assert.Equal(100, fileMeta.NumRows);
+        Assert.Equal(2, fileMeta.NumColumns);
+
+        // Verify data is intact.
+        using var rg = reader.RowGroup(0);
+        using var idReader = rg.Column(0).LogicalReader<int>();
+        var idBuffer = new int[100];
+        idReader.ReadBatch(idBuffer);
+        Assert.Equal(0, idBuffer[0]);
+        Assert.Equal(99, idBuffer[99]);
+
+        using var nameReader = rg.Column(1).LogicalReader<string>();
+        var nameBuffer = new string[100];
+        nameReader.ReadBatch(nameBuffer);
+        Assert.Equal("name_0", nameBuffer[0]);
+        Assert.Equal("name_99", nameBuffer[99]);
+    }
+
+    [Fact]
+    public async Task EWWrite_PythonProbe_BloomFilter_ProbingWorks()
+    {
+        // Write a Parquet file with bloom filters, then use Python (xxhash)
+        // to independently parse and probe the SBBF bloom filter.
+        if (!IsPythonWithXxhashAvailable())
+            return; // Skip: Python with xxhash is not installed.
+
+        var path = TempPath("ew-bloom-probe.parquet");
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("name", Apache.Arrow.Types.StringType.Default, nullable: false))
+            .Build();
+
+        var names = new StringArray.Builder();
+        for (int i = 0; i < 200; i++) names.Append($"name_{i}");
+        var batch = new RecordBatch(schema, new IArrowArray[] { names.Build() }, 200);
+
+        await WriteEW(path, batch, new ParquetWriteOptions
+        {
+            BloomFilterColumns = new HashSet<string> { "name" },
+            BloomFilterFpp = 0.01,
+        });
+
+        // Call Python script to probe the bloom filter.
+        var scriptDir = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "Parquet"));
+        var scriptPath = Path.Combine(scriptDir, "validate_parquet_bloom.py");
+
+        var psi = new ProcessStartInfo(PythonExe!, $"\"{scriptPath}\" \"{path}\" 0 name_0 zzz_absent")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit(15000);
+
+        Assert.True(p.ExitCode == 0,
+            $"Python validation script failed (exit {p.ExitCode}):\n{stderr}");
+
+        using var doc = JsonDocument.Parse(stdout);
+        var root = doc.RootElement;
+
+        Assert.True(root.GetProperty("present").GetBoolean(),
+            "Python xxHash64 SBBF probe should find 'name_0' in our bloom filter.");
+        Assert.False(root.GetProperty("absent").GetBoolean(),
+            "Python xxHash64 SBBF probe should reject 'zzz_absent' from our bloom filter.");
+    }
+
+    private static string? FindPythonExe()
+    {
+        foreach (var candidate in new[] { "python3", "python", "py" })
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(candidate, "--version")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                var p = Process.Start(psi)!;
+                p.WaitForExit(3000);
+                if (p.ExitCode == 0) return candidate;
+            }
+            catch { }
+        }
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var pythonDir = Path.Combine(home, "Programs", "Python");
+        if (Directory.Exists(pythonDir))
+        {
+            foreach (var dir in Directory.EnumerateDirectories(pythonDir, "Python*"))
+            {
+                var exe = Path.Combine(dir, "python.exe");
+                if (File.Exists(exe)) return exe;
+            }
+        }
+        return null;
+    }
+
+    private static readonly string? PythonExe = FindPythonExe();
+
+    private static bool IsPythonWithXxhashAvailable()
+    {
+        if (PythonExe == null) return false;
+        try
+        {
+            var psi = new ProcessStartInfo(PythonExe, "-c \"import xxhash\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            var p = Process.Start(psi)!;
+            p.WaitForExit(5000);
+            return p.ExitCode == 0;
+        }
+        catch { return false; }
     }
 }

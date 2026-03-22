@@ -26,6 +26,7 @@ internal sealed class BinaryColumnWriter : ColumnWriter
         {
             if (!a.IsValid(i)) continue;
             var bytes = a.GetBytes(i);
+            BloomFilter?.AddBytes(bytes);
             _totalLength += bytes.Length;
             len[0] = bytes.Length;
             _lengthEncoder.WriteValues(len);

@@ -29,6 +29,7 @@ internal sealed class FloatColumnWriter : ColumnWriter
             if (v < _min) _min = v;
             if (v > _max) _max = v;
             _sum += v;
+            BloomFilter?.AddDouble(v);
             MemoryMarshal.Write(tmp, ref v);
             _dataStream.Write(tmp);
         }
@@ -114,6 +115,7 @@ internal sealed class DoubleColumnWriter : ColumnWriter
             if (v < _min) _min = v;
             if (v > _max) _max = v;
             _sum += v;
+            BloomFilter?.AddDouble(v);
             MemoryMarshal.Write(tmp, ref v);
             _dataStream.Write(tmp);
         }

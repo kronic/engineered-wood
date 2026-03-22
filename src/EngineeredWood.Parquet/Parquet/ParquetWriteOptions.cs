@@ -109,6 +109,39 @@ public sealed class ParquetWriteOptions
     public IReadOnlyList<Metadata.KeyValue>? KeyValueMetadata { get; init; }
 
     /// <summary>
+    /// Column names (dotted paths) for which Bloom filters should be written.
+    /// <c>null</c> (the default) disables Bloom filter writing for all columns.
+    /// Use a <see cref="HashSet{T}"/> for efficient lookup.
+    /// </summary>
+    public IReadOnlyCollection<string>? BloomFilterColumns { get; init; }
+
+    /// <summary>
+    /// Target false positive probability for Bloom filters. Default is 0.05 (5%).
+    /// Lower values produce larger filters with fewer false positives.
+    /// </summary>
+    public double BloomFilterFpp { get; init; } = 0.05;
+
+    /// <summary>
+    /// Maximum Bloom filter size in bytes per column per row group. Default is 1 MB.
+    /// </summary>
+    public int BloomFilterMaxBytes { get; init; } = 1024 * 1024;
+
+    /// <summary>
+    /// Returns whether the given column should have a Bloom filter.
+    /// </summary>
+    internal bool HasBloomFilter(IReadOnlyList<string> pathInSchema)
+    {
+        if (BloomFilterColumns == null) return false;
+        var dottedPath = string.Join(".", pathInSchema);
+        // Use efficient Contains for HashSet, linear scan for other collections.
+        if (BloomFilterColumns is HashSet<string> hs)
+            return hs.Contains(dottedPath);
+        foreach (var col in BloomFilterColumns)
+            if (col == dottedPath) return true;
+        return false;
+    }
+
+    /// <summary>
     /// Resolves the compression codec for a column, checking per-column overrides first.
     /// </summary>
     internal CompressionCodec GetCodec(IReadOnlyList<string> pathInSchema) =>

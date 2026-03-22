@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using EngineeredWood.Orc.BloomFilter;
 using EngineeredWood.Orc.Encodings;
 using EngineeredWood.Orc.Proto;
 using ProtoStream = EngineeredWood.Orc.Proto.Stream;
@@ -19,6 +20,9 @@ internal abstract class ColumnWriter
     protected bool StripeHasNulls;    // Stripe level: only reset with full Reset()
     protected long RowCount;
     protected long NonNullCount;
+
+    internal OrcBloomFilterBuilder? BloomFilter { get; set; }
+    private List<Proto.BloomFilter>? _bloomFilterEntries;
 
     protected ColumnWriter(int columnId)
     {
@@ -134,6 +138,30 @@ internal abstract class ColumnWriter
     }
 
     /// <summary>
+    /// Serializes the current bloom filter state for the completed row group and resets the builder.
+    /// </summary>
+    internal void FinishBloomFilterRowGroup()
+    {
+        if (BloomFilter == null) return;
+        _bloomFilterEntries ??= new List<Proto.BloomFilter>();
+        _bloomFilterEntries.Add(BloomFilter.ToProto());
+        BloomFilter.Reset();
+    }
+
+    /// <summary>
+    /// Assembles the collected per-row-group bloom filters into a BloomFilterIndex.
+    /// Returns null if no bloom filters were collected.
+    /// </summary>
+    internal Proto.BloomFilterIndex? GetBloomFilterIndex()
+    {
+        if (_bloomFilterEntries == null || _bloomFilterEntries.Count == 0)
+            return null;
+        var index = new Proto.BloomFilterIndex();
+        index.BloomFilter.AddRange(_bloomFilterEntries);
+        return index;
+    }
+
+    /// <summary>
     /// Resets only the statistics tracking, not the stream data.
     /// Called at row group boundaries so GetStatistics() returns per-row-group stats.
     /// </summary>
@@ -154,6 +182,8 @@ internal abstract class ColumnWriter
         StripeHasNulls = false;
         RowCount = 0;
         NonNullCount = 0;
+        _bloomFilterEntries?.Clear();
+        BloomFilter?.Reset();
     }
 
     /// <summary>

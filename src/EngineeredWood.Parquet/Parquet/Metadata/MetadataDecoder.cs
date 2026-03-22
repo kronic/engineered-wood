@@ -502,6 +502,8 @@ internal static class MetadataDecoder
         long? indexPageOffset = null;
         long? dictionaryPageOffset = null;
         Statistics? statistics = null;
+        long? bloomFilterOffset = null;
+        int? bloomFilterLength = null;
 
         while (true)
         {
@@ -546,6 +548,15 @@ internal static class MetadataDecoder
                 case 12: // statistics: Statistics
                     statistics = ReadStatistics(ref reader);
                     break;
+                case 13: // encoding_stats: list<PageEncodingStats> (skip)
+                    reader.Skip(type);
+                    break;
+                case 14: // bloom_filter_offset: i64
+                    bloomFilterOffset = reader.ReadZigZagInt64();
+                    break;
+                case 15: // bloom_filter_length: i32
+                    bloomFilterLength = checked((int)reader.ReadZigZagInt32());
+                    break;
                 default:
                     reader.Skip(type);
                     break;
@@ -567,6 +578,8 @@ internal static class MetadataDecoder
             IndexPageOffset = indexPageOffset,
             DictionaryPageOffset = dictionaryPageOffset,
             Statistics = statistics,
+            BloomFilterOffset = bloomFilterOffset,
+            BloomFilterLength = bloomFilterLength,
         };
     }
 

@@ -418,6 +418,20 @@ internal static class MetadataEncoder
             WriteStatistics(writer, meta.Statistics);
         }
 
+        // Field 14: bloom_filter_offset (optional, i64)
+        if (meta.BloomFilterOffset.HasValue)
+        {
+            writer.WriteFieldHeader(ThriftType.I64, 14);
+            writer.WriteZigZagInt64(meta.BloomFilterOffset.Value);
+        }
+
+        // Field 15: bloom_filter_length (optional, i32)
+        if (meta.BloomFilterLength.HasValue)
+        {
+            writer.WriteFieldHeader(ThriftType.I32, 15);
+            writer.WriteZigZagInt32(meta.BloomFilterLength.Value);
+        }
+
         writer.WriteStructStop();
         writer.PopStruct();
     }

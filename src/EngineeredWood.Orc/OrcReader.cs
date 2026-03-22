@@ -1,6 +1,8 @@
+using System.Collections;
 using Google.Protobuf;
 using EngineeredWood.IO;
 using EngineeredWood.IO.Local;
+using EngineeredWood.Orc.BloomFilter;
 using EngineeredWood.Orc.Proto;
 
 namespace EngineeredWood.Orc;
@@ -222,6 +224,246 @@ public sealed class OrcReader : IAsyncDisposable, IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Returns a <see cref="BitArray"/> indicating which stripes might contain the given value
+    /// in the specified column, based on Bloom filter data. Stripes without a Bloom filter
+    /// for the column are conservatively marked as candidates.
+    /// </summary>
+    /// <param name="column">Column name (case-insensitive, top-level only).</param>
+    /// <param name="value">The value to probe for. Must be type-compatible with the column's ORC type.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="BitArray"/> of length equal to the number of stripes.
+    /// A <c>true</c> bit means the stripe might contain the value;
+    /// a <c>false</c> bit means it definitely does not.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// The column name is not found or the value type is incompatible with the column's ORC type.
+    /// </exception>
+    public Task<BitArray> GetCandidateStripesAsync(
+        string column, object value,
+        CancellationToken cancellationToken = default)
+    {
+        return GetCandidateStripesAsync(column, new[] { value }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns a <see cref="BitArray"/> indicating which stripes might contain any of the given
+    /// values in the specified column, based on Bloom filter data. Stripes without a Bloom filter
+    /// for the column are conservatively marked as candidates.
+    /// </summary>
+    /// <param name="column">Column name (case-insensitive, top-level only).</param>
+    /// <param name="values">
+    /// The values to probe for. A stripe is marked as a candidate if its Bloom filter indicates
+    /// it might contain <em>any</em> of the values. All values must be type-compatible with the
+    /// column's ORC type.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="BitArray"/> of length equal to the number of stripes.
+    /// A <c>true</c> bit means the stripe might contain at least one of the values;
+    /// a <c>false</c> bit means it definitely does not contain any of them.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// The column name is not found, no values are provided, or a value type is incompatible
+    /// with the column's ORC type.
+    /// </exception>
+    public async Task<BitArray> GetCandidateStripesAsync(
+        string column, IReadOnlyList<object> values,
+        CancellationToken cancellationToken = default)
+    {
+        if (column is null) throw new ArgumentNullException(nameof(column));
+        if (values is null) throw new ArgumentNullException(nameof(values));
+        if (values.Count == 0)
+            throw new ArgumentException("At least one value must be provided.", nameof(values));
+
+        // Resolve column name to column ID and ORC type kind.
+        var (columnId, typeKind) = ResolveColumn(column);
+        var hashKind = OrcBloomFilterValueEncoder.GetHashKind(typeKind);
+
+        // Pre-convert values to the appropriate form for probing.
+        long[]? longValues = null;
+        double[]? doubleValues = null;
+        byte[][]? byteValues = null;
+
+        switch (hashKind)
+        {
+            case OrcBloomHashKind.Long:
+                longValues = new long[values.Count];
+                for (int i = 0; i < values.Count; i++)
+                    longValues[i] = OrcBloomFilterValueEncoder.ToLong(values[i]);
+                break;
+            case OrcBloomHashKind.Double:
+                doubleValues = new double[values.Count];
+                for (int i = 0; i < values.Count; i++)
+                    doubleValues[i] = OrcBloomFilterValueEncoder.ToDouble(values[i]);
+                break;
+            case OrcBloomHashKind.Bytes:
+                byteValues = new byte[values.Count][];
+                for (int i = 0; i < values.Count; i++)
+                    byteValues[i] = OrcBloomFilterValueEncoder.ToBytes(values[i]);
+                break;
+        }
+
+        int numStripes = NumberOfStripes;
+        var result = new BitArray(numStripes, true); // default to candidate
+
+        for (int s = 0; s < numStripes; s++)
+        {
+            var bloomFilters = await ReadBloomFilterIndexAsync(s, cancellationToken).ConfigureAwait(false);
+            if (!bloomFilters.TryGetValue(columnId, out var filters) || filters.Count == 0)
+                continue; // no bloom filter for this column in this stripe → conservatively include
+
+            // A stripe is excluded only if NONE of its row groups contain any of the values.
+            bool stripeCandidate = false;
+            foreach (var filter in filters)
+            {
+                stripeCandidate = hashKind switch
+                {
+                    OrcBloomHashKind.Long => AnyMatchLong(filter, longValues!),
+                    OrcBloomHashKind.Double => AnyMatchDouble(filter, doubleValues!),
+                    OrcBloomHashKind.Bytes => AnyMatchBytes(filter, byteValues!),
+                    _ => true,
+                };
+                if (stripeCandidate) break;
+            }
+
+            if (!stripeCandidate)
+                result[s] = false;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads the bloom filter indices for a given stripe.
+    /// Returns a dictionary of column ID → list of <see cref="OrcBloomFilter"/> (one per row group).
+    /// Handles both standard ORC format and old Hive BloomKFilter format.
+    /// </summary>
+    internal async Task<Dictionary<int, List<OrcBloomFilter>>> ReadBloomFilterIndexAsync(
+        int stripeIndex, CancellationToken cancellationToken = default)
+    {
+        var stripe = Footer.Stripes[stripeIndex];
+        var indexLength = (long)stripe.IndexLength;
+        if (indexLength == 0) return new Dictionary<int, List<OrcBloomFilter>>();
+
+        var stripeStart = (long)stripe.Offset;
+        var dataLength = (long)stripe.DataLength;
+        var footerLength = (long)stripe.FooterLength;
+        var footerOffset = stripeStart + indexLength + dataLength;
+
+        // Read index section and stripe footer in parallel.
+        var ranges = new FileRange[]
+        {
+            new(stripeStart, indexLength),
+            new(footerOffset, footerLength),
+        };
+        using var results = new DisposableList<System.Buffers.IMemoryOwner<byte>>(
+            await _reader.ReadRangesAsync(ranges, cancellationToken).ConfigureAwait(false));
+
+        var indexSpan = results[0].Memory.Span;
+        var footerSpan = results[1].Memory.Span;
+
+        StripeFooter stripeFooter;
+        if (Compression == CompressionKind.None)
+            stripeFooter = StripeFooter.Parser.ParseFrom(footerSpan);
+        else
+            stripeFooter = StripeFooter.Parser.ParseFrom(
+                OrcCompression.Decompress(Compression, footerSpan, (int)CompressionBlockSize));
+
+        var result = new Dictionary<int, List<OrcBloomFilter>>();
+        int offset = 0;
+        foreach (var stream in stripeFooter.Streams)
+        {
+            bool isIndex = stream.Kind is Proto.Stream.Types.Kind.RowIndex
+                or Proto.Stream.Types.Kind.BloomFilter
+                or Proto.Stream.Types.Kind.BloomFilterUtf8;
+
+            if (!isIndex) break; // past index section
+
+            if (stream.Kind is Proto.Stream.Types.Kind.BloomFilter
+                or Proto.Stream.Types.Kind.BloomFilterUtf8)
+            {
+                var streamBytes = indexSpan.Slice(offset, (int)stream.Length);
+                byte[] decompressed;
+                if (Compression == CompressionKind.None)
+                    decompressed = streamBytes.ToArray();
+                else
+                    decompressed = OrcCompression.Decompress(Compression, streamBytes, (int)CompressionBlockSize);
+
+                var bfi = BloomFilterIndex.Parser.ParseFrom(decompressed);
+                var writerKind = GetWriterKind();
+                var filters = new List<OrcBloomFilter>(bfi.BloomFilter.Count);
+                foreach (var bf in bfi.BloomFilter)
+                {
+                    var filter = OrcBloomFilter.TryCreate(bf, writerKind);
+                    if (filter != null)
+                        filters.Add(filter);
+                }
+                if (filters.Count > 0)
+                    result[(int)stream.Column] = filters;
+            }
+
+            offset += (int)stream.Length;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Determines the writer kind from the footer's <c>writer</c> field
+    /// (ORC spec: 0=Java, 1=C++, 2=Presto, 3=Go, 4=Trino, 5=CUDF).
+    /// The field was added to the ORC spec after the initial release;
+    /// older files (e.g., Hive-era) may not have it set, in which case
+    /// we default to <see cref="OrcWriterKind.Java"/> since those files
+    /// were almost always written by Java Hive.
+    /// </summary>
+    private OrcWriterKind GetWriterKind()
+    {
+        if (!Footer.HasWriter)
+            return OrcWriterKind.Java;
+
+        return Footer.Writer switch
+        {
+            1 or 5 or 6 => OrcWriterKind.Cpp,
+            _ => OrcWriterKind.Java,
+        };
+    }
+
+    /// <summary>
+    /// Resolves a column name to its column ID and ORC type kind.
+    /// </summary>
+    private (int ColumnId, Proto.Type.Types.Kind Kind) ResolveColumn(string column)
+    {
+        foreach (var child in Schema.Children)
+        {
+            if (string.Equals(child.Name, column, StringComparison.OrdinalIgnoreCase))
+                return (child.ColumnId, child.Kind);
+        }
+        throw new ArgumentException($"Column '{column}' not found in schema.", nameof(column));
+    }
+
+    private static bool AnyMatchLong(OrcBloomFilter filter, long[] values)
+    {
+        foreach (var v in values)
+            if (filter.MightContainLong(v)) return true;
+        return false;
+    }
+
+    private static bool AnyMatchDouble(OrcBloomFilter filter, double[] values)
+    {
+        foreach (var v in values)
+            if (filter.MightContainDouble(v)) return true;
+        return false;
+    }
+
+    private static bool AnyMatchBytes(OrcBloomFilter filter, byte[][] values)
+    {
+        foreach (var v in values)
+            if (filter.MightContain(v)) return true;
+        return false;
     }
 
     public ValueTask DisposeAsync()

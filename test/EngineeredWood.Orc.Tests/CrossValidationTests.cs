@@ -707,4 +707,116 @@ public class CrossValidationTests
             File.Delete(path);
         }
     }
+
+    [SkippableFact]
+    public async Task CrossValidate_BloomFilter_DataIntact()
+    {
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
+
+        var path = GetTempPath();
+        try
+        {
+            // Write an ORC file with bloom filters enabled.
+            var schema = new Schema(
+            [
+                new Field("id", Int32Type.Default, nullable: false),
+                new Field("name", StringType.Default, nullable: false),
+            ], null);
+
+            var options = new OrcWriterOptions
+            {
+                Compression = CompressionKind.None,
+                BloomFilterColumns = new HashSet<string> { "id", "name" },
+                BloomFilterFpp = 0.05,
+            };
+
+            await using (var writer = OrcWriter.Create(path, schema, options))
+            {
+                var ids = new Int32Array.Builder().AppendRange(Enumerable.Range(0, 100)).Build();
+                var names = new StringArray.Builder();
+                for (int i = 0; i < 100; i++) names.Append($"name_{i}");
+                await writer.WriteBatchAsync(new RecordBatch(schema,
+                    [ids, names.Build()], 100));
+            }
+
+            // PyArrow should read the file without errors.
+            var json = ReadOrcWithPyArrow(path);
+            Assert.NotNull(json);
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            Assert.Equal(100, root.GetProperty("num_rows").GetInt32());
+            Assert.Equal(2, root.GetProperty("num_columns").GetInt32());
+
+            // Verify data values survived the bloom filter addition.
+            var idValues = root.GetProperty("columns").GetProperty("id");
+            Assert.Equal(0, idValues[0].GetInt32());
+            Assert.Equal(99, idValues[99].GetInt32());
+
+            var nameValues = root.GetProperty("columns").GetProperty("name");
+            Assert.Equal("name_0", nameValues[0].GetString());
+            Assert.Equal("name_99", nameValues[99].GetString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [SkippableFact]
+    public async Task CrossValidate_BloomFilter_ProbingWorks()
+    {
+        Skip.If(!IsPyArrowAvailable(), "PyArrow is not installed.");
+
+        var path = GetTempPath();
+        try
+        {
+            // Write an ORC file with bloom filters using our writer.
+            var schema = new Schema(
+            [
+                new Field("name", StringType.Default, nullable: false),
+            ], null);
+
+            var options = new OrcWriterOptions
+            {
+                Compression = CompressionKind.None,
+                BloomFilterColumns = new HashSet<string> { "name" },
+                BloomFilterFpp = 0.01,
+            };
+
+            await using (var writer = OrcWriter.Create(path, schema, options))
+            {
+                var names = new StringArray.Builder();
+                for (int i = 0; i < 200; i++) names.Append($"name_{i}");
+                await writer.WriteBatchAsync(new RecordBatch(schema, [names.Build()], 200));
+            }
+
+            // Use Python to independently parse and probe the bloom filter.
+            var scriptPath = Path.Combine(TestHelpers.GetTestDataDirectory(), "validate_orc_bloom.py");
+            var escapedPath = path.Replace("\\", "\\\\");
+
+            var psi = PythonPsi($"\"{scriptPath}\" \"{path}\" name name_0 zzz_absent_value");
+            var p = Process.Start(psi)!;
+            var stdout = p.StandardOutput.ReadToEnd();
+            var stderr = p.StandardError.ReadToEnd();
+            p.WaitForExit(15000);
+
+            Assert.True(p.ExitCode == 0,
+                $"Python validation script failed (exit {p.ExitCode}):\n{stderr}");
+
+            using var doc = JsonDocument.Parse(stdout);
+            var root = doc.RootElement;
+
+            // The Python script independently implements C++ murmur3_64 and probes
+            // the bloom filter. A present value should be found, absent should not.
+            Assert.True(root.GetProperty("present").GetBoolean(),
+                "Python murmur3_64 probe should find 'name_0' in our bloom filter.");
+            Assert.False(root.GetProperty("absent").GetBoolean(),
+                "Python murmur3_64 probe should reject 'zzz_absent_value' from our bloom filter.");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

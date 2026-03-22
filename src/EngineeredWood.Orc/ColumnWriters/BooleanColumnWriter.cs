@@ -26,6 +26,7 @@ internal sealed class BooleanColumnWriter : ColumnWriter
             if (!a.IsValid(i)) continue;
             bool val = a.GetValue(i)!.Value;
             if (val) _trueCount++;
+            BloomFilter?.AddLong(val ? 1L : 0L);
             v[0] = val;
             _encoder.WriteValues(v);
         }

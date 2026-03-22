@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
 using EngineeredWood.Compression;
+using EngineeredWood.Parquet.BloomFilter;
 using EngineeredWood.Parquet.Metadata;
 
 namespace EngineeredWood.Parquet.Data;
@@ -25,6 +26,11 @@ internal static class ColumnChunkWriter
         /// Used by the caller to calculate DictionaryPageOffset vs DataPageOffset.
         /// </summary>
         public int DictionaryPageSize { get; init; }
+
+        /// <summary>
+        /// Serialized Bloom filter block (Thrift header + bitset), or null if not enabled.
+        /// </summary>
+        public byte[]? BloomFilterData { get; init; }
     }
 
     [ThreadStatic]
@@ -160,6 +166,25 @@ internal static class ColumnChunkWriter
             : StatisticsCollector.Compute(
                 array, physicalType, typeLength, valueDefLevels, nonNullCount, rowCount);
         result.MetaData.Statistics = stats;
+
+        // Build Bloom filter if enabled for this column.
+        if (options.HasBloomFilter(pathInSchema))
+        {
+            int ndv = dictResult?.DictionaryCount ?? nonNullCount;
+            int filterBytes = SplitBlockBloomFilterBuilder.OptimalNumBytes(
+                ndv, options.BloomFilterFpp, options.BloomFilterMaxBytes);
+
+            var bfBuilder = new SplitBlockBloomFilterBuilder(filterBytes);
+            BloomFilterArrowEncoder.AddArrowValues(bfBuilder, array, physicalType, typeLength);
+
+            result = new ColumnChunkResult
+            {
+                Data = result.Data,
+                MetaData = result.MetaData,
+                DictionaryPageSize = result.DictionaryPageSize,
+                BloomFilterData = BloomFilterSerializer.Serialize(bfBuilder.ToArray()),
+            };
+        }
 
         return result;
     }
@@ -566,9 +591,12 @@ internal static class ColumnChunkWriter
 
     private static int CountNonNull(int[] defLevels, int offset, int count, int maxDefLevel)
     {
+        var span = defLevels.AsSpan(offset, count);
         int nonNull = 0;
-        for (int i = offset; i < offset + count; i++)
-            if (defLevels[i] >= maxDefLevel) nonNull++;
+
+        foreach (int v in span)
+            nonNull += (v >= maxDefLevel) ? 1 : 0;
+
         return nonNull;
     }
 

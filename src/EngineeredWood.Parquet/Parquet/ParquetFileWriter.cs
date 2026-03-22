@@ -159,6 +159,16 @@ public sealed class ParquetFileWriter : IAsyncDisposable, IDisposable
             long dataPageOffset = chunkStart + result.DictionaryPageSize;
             long? dictionaryPageOffset = result.DictionaryPageSize > 0 ? chunkStart : null;
 
+            // Write Bloom filter block if present.
+            long? bloomFilterOffset = null;
+            int? bloomFilterLength = null;
+            if (result.BloomFilterData != null)
+            {
+                bloomFilterOffset = _file.Position;
+                bloomFilterLength = result.BloomFilterData.Length;
+                await _file.WriteAsync(result.BloomFilterData, cancellationToken).ConfigureAwait(false);
+            }
+
             // Update metadata with actual file offset
             var meta = new ColumnMetaData
             {
@@ -172,6 +182,8 @@ public sealed class ParquetFileWriter : IAsyncDisposable, IDisposable
                 DataPageOffset = dataPageOffset,
                 DictionaryPageOffset = dictionaryPageOffset,
                 Statistics = result.MetaData.Statistics,
+                BloomFilterOffset = bloomFilterOffset,
+                BloomFilterLength = bloomFilterLength,
             };
 
             columnChunks[i] = new ColumnChunk

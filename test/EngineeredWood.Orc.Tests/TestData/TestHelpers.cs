@@ -7,4 +7,7 @@ internal static class TestHelpers
 
     public static string GetTestFilePath(string fileName) =>
         Path.GetFullPath(Path.Combine(TestDataDir, fileName));
+
+    public static string GetTestDataDirectory() =>
+        Path.GetFullPath(TestDataDir);
 }

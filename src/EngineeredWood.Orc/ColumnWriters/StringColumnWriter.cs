@@ -77,6 +77,7 @@ internal sealed class StringColumnWriter : ColumnWriter
             if (!array.IsValid(i)) continue;
             TrackString(array.GetString(i)!);
             var bytes = array.GetBytes(i);
+            BloomFilter?.AddBytes(bytes);
             len[0] = bytes.Length;
             _lengthEncoder.WriteValues(len);
             _dataStream.Write(bytes);
@@ -105,6 +106,8 @@ internal sealed class StringColumnWriter : ColumnWriter
                 _dictEntries!.Add(Encoding.UTF8.GetBytes(str));
             }
             TrackString(str);
+            if (BloomFilter != null)
+                BloomFilter.AddBytes(System.Text.Encoding.UTF8.GetBytes(str));
             _dictIndices!.Add(idx);
         }
     }

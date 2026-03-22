@@ -2,6 +2,7 @@ using Apache.Arrow;
 using Google.Protobuf;
 using EngineeredWood.IO;
 using EngineeredWood.IO.Local;
+using EngineeredWood.Orc.BloomFilter;
 using EngineeredWood.Orc.ColumnWriters;
 using EngineeredWood.Orc.Proto;
 using Type = EngineeredWood.Orc.Proto.Type;
@@ -66,6 +67,23 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
             _columnWriters.AddRange(writers);
             _topLevelWriters.Add(_columnWriters[topLevelIndex]);
             nextId = next;
+        }
+
+        // Set up bloom filters for requested columns
+        if (_options.BloomFilterColumns != null)
+        {
+            var writerKind = _options.BloomFilterHashVariant == OrcBloomHashVariant.Cpp
+                ? OrcWriterKind.Cpp : OrcWriterKind.Java;
+
+            for (int i = 0; i < _topLevelWriters.Count; i++)
+            {
+                var fieldName = arrowSchema.FieldsList[i].Name;
+                if (_options.BloomFilterColumns.Contains(fieldName))
+                {
+                    _topLevelWriters[i].BloomFilter = new OrcBloomFilterBuilder(
+                        Math.Max(1, _options.RowIndexStride), _options.BloomFilterFpp, writerKind);
+                }
+            }
         }
     }
 
@@ -212,6 +230,10 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
                 w.ResetStatistics();
         }
 
+        // Finish bloom filter row groups
+        foreach (var w in _columnWriters)
+            w.FinishBloomFilterRowGroup();
+
         _currentRowGroupRows = 0;
     }
 
@@ -263,6 +285,30 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
             }
         }
 
+        // Write BloomFilterIndex streams for columns that have bloom filters
+        foreach (var w in _columnWriters)
+        {
+            var bfi = w.GetBloomFilterIndex();
+            if (bfi == null) continue;
+
+            var bfiBytes = bfi.ToByteArray();
+            byte[] bfiData;
+            if (_options.Compression != CompressionKind.None)
+                bfiData = OrcCompression.Compress(_options.Compression, bfiBytes, _options.CompressionBlockSize);
+            else
+                bfiData = bfiBytes;
+
+            await _file.WriteAsync(bfiData, cancellationToken).ConfigureAwait(false);
+            indexLength += bfiData.Length;
+
+            streamDescriptors.Add(new Proto.Stream
+            {
+                Column = (uint)w.ColumnId,
+                Kind = Proto.Stream.Types.Kind.BloomFilterUtf8,
+                Length = (ulong)bfiData.Length
+            });
+        }
+
         // Write data streams and track their sizes
         long dataLength = 0;
 
@@ -301,7 +347,12 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
         // Add column encodings (column 0 = root struct, then each column)
         stripeFooter.Columns.Add(new ColumnEncoding { Kind = ColumnEncoding.Types.Kind.Direct }); // root struct
         foreach (var w in _columnWriters)
-            stripeFooter.Columns.Add(w.GetEncoding());
+        {
+            var encoding = w.GetEncoding();
+            if (w.BloomFilter != null)
+                encoding.BloomEncoding = 1;
+            stripeFooter.Columns.Add(encoding);
+        }
 
         // Serialize and optionally compress the stripe footer
         var footerBytes = stripeFooter.ToByteArray();

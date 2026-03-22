@@ -42,4 +42,10 @@ public sealed class ColumnMetaData
 
     /// <summary>Encoding statistics per page type.</summary>
     public IReadOnlyList<KeyValue>? KeyValueMetadata { get; init; }
+
+    /// <summary>Byte offset of the Bloom filter block in the file, if present.</summary>
+    public long? BloomFilterOffset { get; init; }
+
+    /// <summary>Length of the Bloom filter block in bytes, if present.</summary>
+    public int? BloomFilterLength { get; init; }
 }

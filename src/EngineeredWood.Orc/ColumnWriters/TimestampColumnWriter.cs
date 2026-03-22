@@ -38,6 +38,7 @@ internal sealed class TimestampColumnWriter : ColumnWriter
             _hasValues = true;
             if (millis < _minMillis) _minMillis = millis;
             if (millis > _maxMillis) _maxMillis = millis;
+            BloomFilter?.AddLong(millis);
 
             long seconds = Math.DivRem(epochNanos, 1_000_000_000L, out long nanos);
             if (nanos < 0) { seconds--; nanos += 1_000_000_000L; }
