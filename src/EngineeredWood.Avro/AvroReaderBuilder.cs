@@ -14,6 +14,7 @@ public sealed class AvroReaderBuilder
     private SchemaFingerprint? _activeFingerprint;
     private AvroWireFormat _wireFormat = AvroWireFormat.SingleObject;
     private int[]? _projection;
+    private string[]? _projectionNames;
     private string[]? _skipFields;
 
     /// <summary>Maximum rows per RecordBatch (default: 1024).</summary>
@@ -74,6 +75,16 @@ public sealed class AvroReaderBuilder
         return this;
     }
 
+    /// <summary>
+    /// Select specific top-level fields by name. Only these fields are
+    /// materialized; others are skipped during decode.
+    /// </summary>
+    public AvroReaderBuilder WithProjection(params string[] fieldNames)
+    {
+        _projectionNames = fieldNames;
+        return this;
+    }
+
     /// <summary>Skip specific fields by name during decode.</summary>
     public AvroReaderBuilder WithSkipFields(params string[] fieldNames)
     {
@@ -124,6 +135,25 @@ public sealed class AvroReaderBuilder
                     throw new ArgumentOutOfRangeException(nameof(_projection),
                         $"Field index {idx} out of range (0..{writerSchema.Fields.Count - 1}).");
                 fields.Add(writerSchema.Fields[idx]);
+            }
+            var projected = new AvroRecordSchema(writerSchema.Name, writerSchema.Namespace, fields);
+            return new AvroSchema(AvroSchemaWriter.ToJson(projected));
+        }
+
+        if (_projectionNames != null)
+        {
+            var lookup = new Dictionary<string, AvroFieldNode>(StringComparer.Ordinal);
+            foreach (var f in writerSchema.Fields)
+                lookup[f.Name] = f;
+
+            var fields = new List<AvroFieldNode>();
+            foreach (string name in _projectionNames)
+            {
+                if (!lookup.TryGetValue(name, out var field))
+                    throw new ArgumentException(
+                        $"Field '{name}' not found in writer schema. Available fields: {string.Join(", ", writerSchema.Fields.Select(f => f.Name))}.",
+                        nameof(_projectionNames));
+                fields.Add(field);
             }
             var projected = new AvroRecordSchema(writerSchema.Name, writerSchema.Namespace, fields);
             return new AvroSchema(AvroSchemaWriter.ToJson(projected));

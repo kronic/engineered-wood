@@ -129,7 +129,7 @@ internal sealed class OcfReaderAsync : IAsyncDisposable
             return (new ReadOnlyMemory<byte>(_readBuffer, 0, size), objectCount);
 
         _decompressBuffer.Reset();
-        AvroCompression.Decompress(_codec, _readBuffer.AsSpan(0, size), _decompressBuffer);
+        AvroCompression.Decompress(_codec, _readBuffer, 0, size, _decompressBuffer);
         return (_decompressBuffer.WrittenMemory, objectCount);
     }
 

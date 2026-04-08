@@ -46,6 +46,10 @@ internal static class AvroCompression
     /// Decompresses data into a caller-owned buffer, avoiding per-call allocations.
     /// The caller should call <see cref="GrowableBuffer.Reset"/> before this method.
     /// </summary>
+    /// <remarks>
+    /// Prefer the <see cref="Decompress(AvroCodec, byte[], int, int, GrowableBuffer)"/> overload
+    /// when the underlying array is available — it avoids an array copy for Deflate.
+    /// </remarks>
     public static void Decompress(AvroCodec codec, ReadOnlySpan<byte> data, GrowableBuffer output)
     {
         if (codec == AvroCodec.Null)
@@ -72,16 +76,31 @@ internal static class AvroCompression
             return;
         }
 
-        // Deflate: unknown uncompressed size, use stream-based decompression
-        DecompressStream(data, output);
+        // Deflate: unknown uncompressed size, use stream-based decompression.
+        // Must copy to array because DeflateStream requires a Stream.
+        DecompressDeflate(data.ToArray(), 0, data.Length, output);
     }
 
-    private static void DecompressStream(ReadOnlySpan<byte> data, GrowableBuffer output)
+    /// <summary>
+    /// Decompresses from a byte array, avoiding the span-to-array copy for Deflate.
+    /// </summary>
+    public static void Decompress(AvroCodec codec, byte[] data, int offset, int count, GrowableBuffer output)
     {
-        using var sourceStream = new MemoryStream(data.ToArray());
+        if (codec == AvroCodec.Deflate)
+        {
+            DecompressDeflate(data, offset, count, output);
+            return;
+        }
+
+        // All other codecs work on spans — delegate to the span overload.
+        Decompress(codec, data.AsSpan(offset, count), output);
+    }
+
+    private static void DecompressDeflate(byte[] data, int offset, int count, GrowableBuffer output)
+    {
+        using var sourceStream = new MemoryStream(data, offset, count, writable: false);
         using var decompressionStream = new System.IO.Compression.DeflateStream(
             sourceStream, System.IO.Compression.CompressionMode.Decompress);
-        // Read in chunks into the growable buffer
         while (true)
         {
             var span = output.GetSpan(4096);

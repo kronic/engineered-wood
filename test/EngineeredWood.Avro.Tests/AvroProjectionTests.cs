@@ -304,6 +304,69 @@ public class AvroProjectionTests
     }
 
     [Fact]
+    public void WithProjection_ByName_SelectsTwoOfFiveColumns()
+    {
+        var batch = MakeFiveColumnBatch(50);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = new AvroReaderBuilder()
+            .WithProjection("col_a", "col_c")
+            .Build(ms);
+
+        Assert.Equal(2, reader.Schema.FieldsList.Count);
+        Assert.Equal("col_a", reader.Schema.FieldsList[0].Name);
+        Assert.Equal("col_c", reader.Schema.FieldsList[1].Name);
+
+        var result = reader.ReadNextBatch();
+        Assert.NotNull(result);
+        Assert.Equal(50, result.Length);
+        Assert.Equal(2, result.ColumnCount);
+
+        var ints = (Int32Array)result.Column(0);
+        var doubles = (DoubleArray)result.Column(1);
+        for (int i = 0; i < 50; i++)
+        {
+            Assert.Equal(i, ints.GetValue(i));
+            Assert.Equal(i * 1.5, doubles.GetValue(i));
+        }
+    }
+
+    [Fact]
+    public void WithProjection_ByName_UnknownField_Throws()
+    {
+        var batch = MakeFiveColumnBatch(10);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        Assert.Throws<ArgumentException>(() =>
+            new AvroReaderBuilder().WithProjection("col_a", "nonexistent").Build(ms));
+    }
+
+    [Fact]
+    public void WithProjection_ByName_SingleColumn()
+    {
+        var batch = MakeFiveColumnBatch(15);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = new AvroReaderBuilder()
+            .WithProjection("col_d")
+            .Build(ms);
+
+        Assert.Single(reader.Schema.FieldsList);
+        Assert.Equal("col_d", reader.Schema.FieldsList[0].Name);
+
+        var result = reader.ReadNextBatch();
+        Assert.NotNull(result);
+        Assert.Equal(15, result.Length);
+
+        var bools = (BooleanArray)result.Column(0);
+        for (int i = 0; i < 15; i++)
+            Assert.Equal(i % 2 == 0, bools.GetValue(i));
+    }
+
+    [Fact]
     public void WithProjection_OutOfRange_Throws()
     {
         var batch = MakeFiveColumnBatch(10);
@@ -336,6 +399,129 @@ public class AvroProjectionTests
         var bools = (BooleanArray)result.Column(0);
         for (int i = 0; i < 15; i++)
             Assert.Equal(i % 2 == 0, bools.GetValue(i));
+    }
+
+    [Fact]
+    public async Task Async_Projection_ByName()
+    {
+        var batch = MakeFiveColumnBatch(25);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = await new AvroReaderBuilder()
+            .WithProjection("col_a", "col_e")
+            .BuildAsync(ms);
+
+        Assert.Equal(2, reader.Schema.FieldsList.Count);
+        Assert.Equal("col_a", reader.Schema.FieldsList[0].Name);
+        Assert.Equal("col_e", reader.Schema.FieldsList[1].Name);
+
+        var result = await reader.ReadNextBatchAsync();
+        Assert.NotNull(result);
+        Assert.Equal(25, result.Length);
+
+        var ints = (Int32Array)result.Column(0);
+        var longs = (Int64Array)result.Column(1);
+        for (int i = 0; i < 25; i++)
+        {
+            Assert.Equal(i, ints.GetValue(i));
+            Assert.Equal((long)i * 100, longs.GetValue(i));
+        }
+    }
+
+    [Fact]
+    public void WithProjection_AllColumns_EquivalentToNoProjection()
+    {
+        var batch = MakeFiveColumnBatch(20);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = new AvroReaderBuilder()
+            .WithProjection(0, 1, 2, 3, 4)
+            .Build(ms);
+
+        Assert.Equal(5, reader.Schema.FieldsList.Count);
+
+        var result = reader.ReadNextBatch();
+        Assert.NotNull(result);
+        Assert.Equal(20, result.Length);
+        Assert.Equal(5, result.ColumnCount);
+
+        var ints = (Int32Array)result.Column(0);
+        var strings = (StringArray)result.Column(1);
+        var doubles = (DoubleArray)result.Column(2);
+        var bools = (BooleanArray)result.Column(3);
+        var longs = (Int64Array)result.Column(4);
+        for (int i = 0; i < 20; i++)
+        {
+            Assert.Equal(i, ints.GetValue(i));
+            Assert.Equal($"str_{i}", strings.GetString(i));
+            Assert.Equal(i * 1.5, doubles.GetValue(i));
+            Assert.Equal(i % 2 == 0, bools.GetValue(i));
+            Assert.Equal((long)i * 100, longs.GetValue(i));
+        }
+    }
+
+    [Fact]
+    public void WithProjection_NonSequentialOrder()
+    {
+        var batch = MakeFiveColumnBatch(20);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = new AvroReaderBuilder()
+            .WithProjection(4, 1, 0)
+            .Build(ms);
+
+        Assert.Equal(3, reader.Schema.FieldsList.Count);
+        Assert.Equal("col_e", reader.Schema.FieldsList[0].Name);
+        Assert.Equal("col_b", reader.Schema.FieldsList[1].Name);
+        Assert.Equal("col_a", reader.Schema.FieldsList[2].Name);
+
+        var result = reader.ReadNextBatch();
+        Assert.NotNull(result);
+        Assert.Equal(20, result.Length);
+
+        var longs = (Int64Array)result.Column(0);
+        var strings = (StringArray)result.Column(1);
+        var ints = (Int32Array)result.Column(2);
+        for (int i = 0; i < 20; i++)
+        {
+            Assert.Equal((long)i * 100, longs.GetValue(i));
+            Assert.Equal($"str_{i}", strings.GetString(i));
+            Assert.Equal(i, ints.GetValue(i));
+        }
+    }
+
+    [Fact]
+    public void WithProjection_ByName_NonSequentialOrder()
+    {
+        var batch = MakeFiveColumnBatch(20);
+        var bytes = WriteToBytes(FiveColumnSchema, batch);
+
+        using var ms = new MemoryStream(bytes);
+        var reader = new AvroReaderBuilder()
+            .WithProjection("col_e", "col_b", "col_a")
+            .Build(ms);
+
+        Assert.Equal(3, reader.Schema.FieldsList.Count);
+        Assert.Equal("col_e", reader.Schema.FieldsList[0].Name);
+        Assert.Equal("col_b", reader.Schema.FieldsList[1].Name);
+        Assert.Equal("col_a", reader.Schema.FieldsList[2].Name);
+
+        var result = reader.ReadNextBatch();
+        Assert.NotNull(result);
+        Assert.Equal(20, result.Length);
+
+        var longs = (Int64Array)result.Column(0);
+        var strings = (StringArray)result.Column(1);
+        var ints = (Int32Array)result.Column(2);
+        for (int i = 0; i < 20; i++)
+        {
+            Assert.Equal((long)i * 100, longs.GetValue(i));
+            Assert.Equal($"str_{i}", strings.GetString(i));
+            Assert.Equal(i, ints.GetValue(i));
+        }
     }
 
     private static ArrowBuffer ToOffsetBuffer(List<int> offsets)

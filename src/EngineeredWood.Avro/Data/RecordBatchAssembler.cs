@@ -19,11 +19,13 @@ internal sealed class RecordBatchAssembler
     private readonly AvroRecordSchema _writerSchema;
     private readonly Apache.Arrow.Schema _arrowSchema;
     private readonly SchemaResolution? _resolution;
+    private readonly IColumnBuilder[] _builders;
 
     public RecordBatchAssembler(AvroRecordSchema schema, Apache.Arrow.Schema arrowSchema)
     {
         _writerSchema = schema;
         _arrowSchema = arrowSchema;
+        _builders = CreateBuilders(schema, arrowSchema);
     }
 
     public RecordBatchAssembler(AvroRecordSchema writerSchema, SchemaResolution resolution)
@@ -31,6 +33,7 @@ internal sealed class RecordBatchAssembler
         _writerSchema = writerSchema;
         _arrowSchema = resolution.ArrowSchema;
         _resolution = resolution;
+        _builders = CreateResolvedBuilders(writerSchema, resolution);
     }
 
     /// <summary>
@@ -41,16 +44,16 @@ internal sealed class RecordBatchAssembler
     {
         var reader = new AvroBinaryReader(data);
         var effectiveSchema = _resolution?.ArrowSchema ?? _arrowSchema;
-        var builders = CreateBuildersForDecode();
+        ResetBuilders();
 
         int rowCount = 0;
         for (int i = 0; i < maxRows && !reader.IsEmpty; i++)
         {
-            DecodeRecordDispatch(ref reader, builders);
+            DecodeRecordDispatch(ref reader, _builders);
             rowCount++;
         }
 
-        var arrays = BuildArrays(builders, effectiveSchema);
+        var arrays = BuildArrays(_builders, effectiveSchema);
         var batch = new RecordBatch(effectiveSchema, arrays, rowCount);
         return (batch, reader.Position);
     }
@@ -62,23 +65,22 @@ internal sealed class RecordBatchAssembler
     {
         var reader = new AvroBinaryReader(data);
         var effectiveSchema = _resolution?.ArrowSchema ?? _arrowSchema;
-        var builders = CreateBuildersForDecode();
+        ResetBuilders();
 
         for (int i = 0; i < objectCount; i++)
-            DecodeRecordDispatch(ref reader, builders);
+            DecodeRecordDispatch(ref reader, _builders);
 
-        var arrays = BuildArrays(builders, effectiveSchema);
+        var arrays = BuildArrays(_builders, effectiveSchema);
         return new RecordBatch(effectiveSchema, arrays, objectCount);
     }
 
-    private IList<IColumnBuilder> CreateBuildersForDecode()
+    private void ResetBuilders()
     {
-        if (_resolution != null)
-            return CreateResolvedBuilders(_writerSchema, _resolution);
-        return CreateBuilders(_writerSchema, _arrowSchema);
+        for (int i = 0; i < _builders.Length; i++)
+            _builders[i].Reset();
     }
 
-    private void DecodeRecordDispatch(ref AvroBinaryReader reader, IList<IColumnBuilder> builders)
+    private void DecodeRecordDispatch(ref AvroBinaryReader reader, IColumnBuilder[] builders)
     {
         if (_resolution != null)
             DecodeRecordWithResolution(ref reader, _writerSchema, _resolution, builders);
@@ -86,7 +88,7 @@ internal sealed class RecordBatchAssembler
             DecodeRecord(ref reader, _writerSchema, builders);
     }
 
-    private static void DecodeRecord(ref AvroBinaryReader reader, AvroRecordSchema schema, IList<IColumnBuilder> builders)
+    private static void DecodeRecord(ref AvroBinaryReader reader, AvroRecordSchema schema, IColumnBuilder[] builders)
     {
         for (int i = 0; i < schema.Fields.Count; i++)
             builders[i].Append(ref reader);
@@ -100,7 +102,7 @@ internal sealed class RecordBatchAssembler
         ref AvroBinaryReader reader,
         AvroRecordSchema writerSchema,
         SchemaResolution resolution,
-        IList<IColumnBuilder> builders)
+        IColumnBuilder[] builders)
     {
         // builders are indexed by reader field index.
         for (int wi = 0; wi < writerSchema.Fields.Count; wi++)
@@ -127,7 +129,7 @@ internal sealed class RecordBatchAssembler
     /// Creates builders for resolved schema: one builder per reader field,
     /// using promoting builders where type promotion is needed.
     /// </summary>
-    private static IList<IColumnBuilder> CreateResolvedBuilders(
+    private static IColumnBuilder[] CreateResolvedBuilders(
         AvroRecordSchema writerSchema, SchemaResolution resolution)
     {
         var readerSchema = resolution.ReaderSchema;
@@ -248,14 +250,14 @@ internal sealed class RecordBatchAssembler
             writerRecord, readerRecord, nestedResolution, readerBuilders);
     }
 
-    private static IList<IColumnBuilder> CreateBuilders(AvroRecordSchema avroSchema, Apache.Arrow.Schema arrowSchema)
+    private static IColumnBuilder[] CreateBuilders(AvroRecordSchema avroSchema, Apache.Arrow.Schema arrowSchema)
     {
-        var builders = new List<IColumnBuilder>();
-        for (int i = 0; i < arrowSchema.FieldsList.Count; i++)
+        var builders = new IColumnBuilder[arrowSchema.FieldsList.Count];
+        for (int i = 0; i < builders.Length; i++)
         {
             var field = arrowSchema.FieldsList[i];
             var avroFieldSchema = avroSchema.Fields[i].Schema;
-            builders.Add(CreateBuilder(field, avroFieldSchema, 0));
+            builders[i] = CreateBuilder(field, avroFieldSchema, 0);
         }
         return builders;
     }
@@ -373,10 +375,10 @@ internal sealed class RecordBatchAssembler
         }
     }
 
-    private static IArrowArray[] BuildArrays(IList<IColumnBuilder> builders, Apache.Arrow.Schema schema)
+    private static IArrowArray[] BuildArrays(IColumnBuilder[] builders, Apache.Arrow.Schema schema)
     {
-        var arrays = new IArrowArray[builders.Count];
-        for (int i = 0; i < builders.Count; i++)
+        var arrays = new IArrowArray[builders.Length];
+        for (int i = 0; i < builders.Length; i++)
             arrays[i] = builders[i].Build(schema.FieldsList[i]);
         return arrays;
     }
@@ -388,6 +390,8 @@ internal interface IColumnBuilder
     void Append(ref AvroBinaryReader reader);
     void AppendNull();
     IArrowArray Build(Field field);
+    /// <summary>Resets accumulated state so the builder can be reused for the next batch.</summary>
+    void Reset();
 }
 
 /// <summary>Wraps a non-nullable builder to handle ["null", T] unions.</summary>
@@ -417,6 +421,7 @@ internal sealed class NullableBuilder : IColumnBuilder
 
     public void AppendNull() => _inner.AppendNull();
     public IArrowArray Build(Field field) => _inner.Build(field);
+    public void Reset() => _inner.Reset();
 }
 
 // ─── Validity bitmap accumulator ───
@@ -474,6 +479,14 @@ internal struct ValidityTracker
     }
 
     public ArrowBuffer BuildBitmap() => new(_bitmap.AsMemory(0, (_count + 7) / 8));
+
+    /// <summary>Resets count and null count, retaining the allocated bitmap.</summary>
+    public void Reset()
+    {
+        _bitmap.AsSpan(0, (_count + 7) / 8).Clear();
+        _count = 0;
+        _nullCount = 0;
+    }
 }
 
 // ─── Primitive builders ───
@@ -484,69 +497,77 @@ internal sealed class NullBuilder : IColumnBuilder
     public void Append(ref AvroBinaryReader reader) => _count++;
     public void AppendNull() => _count++;
     public IArrowArray Build(Field field) => new NullArray(_count);
+    public void Reset() => _count = 0;
 }
 
 internal sealed class BooleanBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.BooleanArray.Builder _builder = new();
+    private Apache.Arrow.BooleanArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadBoolean());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(bool value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class Int32Builder : IColumnBuilder
 {
-    private readonly Apache.Arrow.Int32Array.Builder _builder = new();
+    private Apache.Arrow.Int32Array.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadInt());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(int value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class Int64Builder : IColumnBuilder
 {
-    private readonly Apache.Arrow.Int64Array.Builder _builder = new();
+    private Apache.Arrow.Int64Array.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadLong());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(long value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class FloatBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.FloatArray.Builder _builder = new();
+    private Apache.Arrow.FloatArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadFloat());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(float value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class DoubleBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.DoubleArray.Builder _builder = new();
+    private Apache.Arrow.DoubleArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadDouble());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(double value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class BinaryBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.BinaryArray.Builder _builder = new();
+    private Apache.Arrow.BinaryArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadBytes());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(byte[] value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class StringBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.StringArray.Builder _builder = new();
+    private Apache.Arrow.StringArray.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadString());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(string value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 // ─── Logical type builders ───
@@ -555,48 +576,53 @@ internal sealed class Date32Builder : IColumnBuilder
 {
 #if NET6_0_OR_GREATER
     private static readonly DateOnly Epoch = new(1970, 1, 1);
-    private readonly Apache.Arrow.Date32Array.Builder _builder = new();
+    private Apache.Arrow.Date32Array.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader)
         => _builder.Append(Epoch.AddDays(reader.ReadInt()));
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(int daysSinceEpoch) => _builder.Append(Epoch.AddDays(daysSinceEpoch));
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 #else
     private static readonly DateTime Epoch = new DateTime(1970, 1, 1);
-    private readonly Apache.Arrow.Date32Array.Builder _builder = new();
+    private Apache.Arrow.Date32Array.Builder _builder = new();
     public void Append(ref AvroBinaryReader reader)
         => _builder.Append(Epoch.AddDays(reader.ReadInt()));
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(int daysSinceEpoch) => _builder.Append(Epoch.AddDays(daysSinceEpoch));
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 #endif
 }
 
 internal sealed class Time32MillisBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.Time32Array.Builder _builder = new(new Time32Type(TimeUnit.Millisecond));
+    private Apache.Arrow.Time32Array.Builder _builder = new(new Time32Type(TimeUnit.Millisecond));
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadInt());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(int value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new(new Time32Type(TimeUnit.Millisecond));
 }
 
 internal sealed class Time64MicrosBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.Time64Array.Builder _builder = new(new Time64Type(TimeUnit.Microsecond));
+    private Apache.Arrow.Time64Array.Builder _builder = new(new Time64Type(TimeUnit.Microsecond));
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadLong());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(long value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new(new Time64Type(TimeUnit.Microsecond));
 }
 
 internal sealed class Time64NanosBuilder : IColumnBuilder
 {
-    private readonly Apache.Arrow.Time64Array.Builder _builder = new(new Time64Type(TimeUnit.Nanosecond));
+    private Apache.Arrow.Time64Array.Builder _builder = new(new Time64Type(TimeUnit.Nanosecond));
     public void Append(ref AvroBinaryReader reader) => _builder.Append(reader.ReadLong());
     public void AppendNull() => _builder.AppendNull();
     public void AppendDefault(long value) => _builder.Append(value);
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new(new Time64Type(TimeUnit.Nanosecond));
 }
 
 /// <summary>
@@ -605,7 +631,7 @@ internal sealed class Time64NanosBuilder : IColumnBuilder
 /// </summary>
 internal sealed class DurationBuilder : IColumnBuilder
 {
-    private readonly MonthDayNanosecondIntervalArray.Builder _builder = new();
+    private MonthDayNanosecondIntervalArray.Builder _builder = new();
 
     public void Append(ref AvroBinaryReader reader)
     {
@@ -619,33 +645,37 @@ internal sealed class DurationBuilder : IColumnBuilder
 
     public void AppendNull() => _builder.AppendNull();
     public IArrowArray Build(Field field) => _builder.Build();
+    public void Reset() => _builder = new();
 }
 
 internal sealed class TimestampBuilder : IColumnBuilder
 {
-    private readonly List<long> _values = new();
+    private byte[] _buffer = new byte[64];
+    private int _count;
     private ValidityTracker _validity = new();
-    public void Append(ref AvroBinaryReader reader) { _values.Add(reader.ReadLong()); _validity.AppendValid(); }
-    public void AppendNull() { _values.Add(0); _validity.AppendNull(); }
-    public void AppendDefault(long value) { _values.Add(value); _validity.AppendValid(); }
+
+    public void Append(ref AvroBinaryReader reader) { AppendValue(reader.ReadLong()); _validity.AppendValid(); }
+    public void AppendNull() { AppendValue(0); _validity.AppendNull(); }
+    public void AppendDefault(long value) { AppendValue(value); _validity.AppendValid(); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AppendValue(long value)
+    {
+        int offset = _count * 8;
+        if (offset + 8 > _buffer.Length)
+            System.Array.Resize(ref _buffer, _buffer.Length * 2);
+        BinaryPrimitives.WriteInt64LittleEndian(_buffer.AsSpan(offset), value);
+        _count++;
+    }
+
     public IArrowArray Build(Field field)
     {
-        int count = _values.Count;
-        var valueBuffer = new byte[count * 8];
-        for (int i = 0; i < count; i++)
-        {
-#if NETSTANDARD2_0
-            var bytes = BitConverter.GetBytes(_values[i]);
-            Buffer.BlockCopy(bytes, 0, valueBuffer, i * 8, 8);
-#else
-            BitConverter.TryWriteBytes(valueBuffer.AsSpan(i * 8), _values[i]);
-#endif
-        }
-
-        var data = new ArrayData(field.DataType, count, _validity.NullCount,
-            0, [_validity.BuildBitmap(), new ArrowBuffer(valueBuffer)]);
+        var data = new ArrayData(field.DataType, _count, _validity.NullCount,
+            0, [_validity.BuildBitmap(), new ArrowBuffer(_buffer.AsMemory(0, _count * 8))]);
         return ArrowArrayFactory.BuildArray(data);
     }
+
+    public void Reset() { _count = 0; _validity.Reset(); }
 }
 
 // ─── Complex type builders ───
@@ -653,7 +683,7 @@ internal sealed class TimestampBuilder : IColumnBuilder
 internal sealed class EnumBuilder : IColumnBuilder
 {
     private readonly IReadOnlyList<string> _symbols;
-    private readonly Int32Array.Builder _indexBuilder = new();
+    private Int32Array.Builder _indexBuilder = new();
 
     public EnumBuilder(IReadOnlyList<string> symbols) => _symbols = symbols;
 
@@ -670,6 +700,8 @@ internal sealed class EnumBuilder : IColumnBuilder
         return new DictionaryArray((DictionaryType)field.DataType,
             _indexBuilder.Build(), dictBuilder.Build());
     }
+
+    public void Reset() => _indexBuilder = new();
 }
 
 /// <summary>
@@ -680,7 +712,7 @@ internal sealed class RemappingEnumBuilder : IColumnBuilder
 {
     private readonly IReadOnlyList<string> _readerSymbols;
     private readonly int[] _writerToReaderIndex;
-    private readonly Int32Array.Builder _indexBuilder = new();
+    private Int32Array.Builder _indexBuilder = new();
 
     public RemappingEnumBuilder(AvroEnumSchema writerSchema, AvroEnumSchema readerSchema)
     {
@@ -740,6 +772,8 @@ internal sealed class RemappingEnumBuilder : IColumnBuilder
         return new DictionaryArray((DictionaryType)field.DataType,
             _indexBuilder.Build(), dictBuilder.Build());
     }
+
+    public void Reset() => _indexBuilder = new();
 }
 
 internal sealed class FixedBuilder : IColumnBuilder
@@ -788,6 +822,8 @@ internal sealed class FixedBuilder : IColumnBuilder
             0, [_validity.BuildBitmap(), new ArrowBuffer(_values.AsMemory(0, _count * _size))]);
         return ArrowArrayFactory.BuildArray(data);
     }
+
+    public void Reset() { _count = 0; _validity.Reset(); }
 }
 
 internal sealed class ArrayBuilder : IColumnBuilder
@@ -833,6 +869,14 @@ internal sealed class ArrayBuilder : IColumnBuilder
         return BuildListArray(listType, values, _offsets, _validity);
     }
 
+    public void Reset()
+    {
+        _itemBuilder.Reset();
+        _offsets.Clear();
+        _offsets.Add(0);
+        _validity.Reset();
+    }
+
     internal static ListArray BuildListArray(
         ListType listType, IArrowArray values, List<int> offsets, ValidityTracker validity)
     {
@@ -847,7 +891,7 @@ internal sealed class ArrayBuilder : IColumnBuilder
 internal sealed class MapBuilder : IColumnBuilder
 {
     private readonly IColumnBuilder _valueBuilder;
-    private readonly StringArray.Builder _keyBuilder = new();
+    private StringArray.Builder _keyBuilder = new();
     private readonly List<int> _offsets = new() { 0 };
     private ValidityTracker _validity = new();
 
@@ -899,6 +943,15 @@ internal sealed class MapBuilder : IColumnBuilder
         return new MapArray(mapType, _validity.Count,
             offsetBuffer.Build(), entries, _validity.BuildBitmap(), _validity.NullCount);
     }
+
+    public void Reset()
+    {
+        _valueBuilder.Reset();
+        _keyBuilder = new();
+        _offsets.Clear();
+        _offsets.Add(0);
+        _validity.Reset();
+    }
 }
 
 internal sealed class StructBuilder : IColumnBuilder
@@ -932,6 +985,13 @@ internal sealed class StructBuilder : IColumnBuilder
 
         return new StructArray(structType, _validity.Count,
             childArrays, _validity.BuildBitmap(), _validity.NullCount);
+    }
+
+    public void Reset()
+    {
+        foreach (var (_, builder) in _children)
+            builder.Reset();
+        _validity.Reset();
     }
 }
 
@@ -1000,6 +1060,13 @@ internal sealed class ResolvingStructBuilder : IColumnBuilder
         return new StructArray(structType, _validity.Count,
             childArrays, _validity.BuildBitmap(), _validity.NullCount);
     }
+
+    public void Reset()
+    {
+        foreach (var builder in _readerBuilders)
+            builder.Reset();
+        _validity.Reset();
+    }
 }
 
 // ─── Decimal builders ───
@@ -1065,6 +1132,8 @@ internal sealed class DecimalFixedBuilder : IColumnBuilder
             0, [_validity.BuildBitmap(), new ArrowBuffer(_values.AsMemory(0, _count * 16))]);
         return ArrowArrayFactory.BuildArray(data);
     }
+
+    public void Reset() { _count = 0; _validity.Reset(); }
 }
 
 /// <summary>Reads Avro variable-length bytes and converts to Arrow Decimal128 (big-endian → little-endian).</summary>
@@ -1126,6 +1195,8 @@ internal sealed class DecimalBytesBuilder : IColumnBuilder
             0, [_validity.BuildBitmap(), new ArrowBuffer(_values.AsMemory(0, _count * 16))]);
         return ArrowArrayFactory.BuildArray(data);
     }
+
+    public void Reset() { _count = 0; _validity.Reset(); }
 }
 
 internal static class DecimalArrayHelper
@@ -1205,5 +1276,14 @@ internal sealed class DenseUnionBuilder : IColumnBuilder
         var offsetBuffer = new ArrowBuffer(MemoryMarshal.AsBytes(offsetBytes.AsSpan()).ToArray());
 
         return new DenseUnionArray(unionType, _typeIds.Count, children, typeIdBuffer, offsetBuffer);
+    }
+
+    public void Reset()
+    {
+        _typeIds.Clear();
+        _offsets.Clear();
+        System.Array.Clear(_branchCounts, 0, _branchCounts.Length);
+        foreach (var builder in _branchBuilders)
+            builder.Reset();
     }
 }

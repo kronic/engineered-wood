@@ -108,4 +108,11 @@ internal static class Varint
         if (v == 0) return 1;
         return (64 - BitOperations.LeadingZeroCount(v) + 6) / 7;
     }
+
+    /// <summary>
+    /// Returns the maximum varint bytes needed for any signed value up to <paramref name="maxValue"/>.
+    /// Useful for reserving buffer space before the actual value is known.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int MaxBytesForValue(long maxValue) => SignedSize(maxValue);
 }

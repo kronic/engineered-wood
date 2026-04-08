@@ -69,6 +69,19 @@ internal sealed class AvroBinaryWriter
 
     public void WriteString(string value)
     {
+#if NET8_0_OR_GREATER
+        // Single-pass fast path for strings whose UTF-8 length equals char length
+        // (pure ASCII). This covers the vast majority of real-world Avro string data
+        // and avoids the separate GetByteCount traversal.
+        int maxBytes = System.Text.Encoding.UTF8.GetMaxByteCount(value.Length);
+        int varintMax = Varint.MaxBytesForValue(maxBytes);
+        var span = _buffer.GetSpan(varintMax + maxBytes);
+        int byteCount = System.Text.Encoding.UTF8.GetBytes(value, span[varintMax..]);
+        int varintLen = Varint.WriteSigned(span, byteCount);
+        if (varintLen < varintMax)
+            span.Slice(varintMax, byteCount).CopyTo(span[varintLen..]);
+        _buffer.Advance(varintLen + byteCount);
+#else
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(value);
         WriteLong(byteCount);
         var span = _buffer.GetSpan(byteCount);
@@ -79,6 +92,7 @@ internal sealed class AvroBinaryWriter
         System.Text.Encoding.UTF8.GetBytes(value, span);
 #endif
         _buffer.Advance(byteCount);
+#endif
     }
 
     public void WriteString(ReadOnlySpan<byte> utf8Bytes)
