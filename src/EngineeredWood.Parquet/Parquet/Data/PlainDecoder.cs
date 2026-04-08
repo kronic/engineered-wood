@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 
@@ -106,37 +107,47 @@ internal static class PlainDecoder
     {
         // Single pass: scan lengths to compute total size, then bulk-copy.
         // Lengths array avoids re-reading each 4-byte header in a second pass.
-        Span<int> lengths = count <= 512 ? stackalloc int[count] : new int[count];
-
-        int pos = 0;
-        int totalDataSize = 0;
-        for (int i = 0; i < count; i++)
+        // Cap stack buffer at 256 ints (1 KB); rent from the pool for larger batches.
+        int[]? rentedLengths = null;
+        Span<int> lengths = count <= 256
+            ? stackalloc int[count]
+            : (rentedLengths = ArrayPool<int>.Shared.Rent(count)).AsSpan(0, count);
+        try
         {
-            if (pos + 4 > data.Length)
-                throw new ParquetFormatException("Unexpected end of PLAIN ByteArray data.");
-            int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(pos));
-            lengths[i] = len;
-            pos += 4 + len;
-            totalDataSize += len;
+            int pos = 0;
+            int totalDataSize = 0;
+            for (int i = 0; i < count; i++)
+            {
+                if (pos + 4 > data.Length)
+                    throw new ParquetFormatException("Unexpected end of PLAIN ByteArray data.");
+                int len = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(pos));
+                lengths[i] = len;
+                pos += 4 + len;
+                totalDataSize += len;
+            }
+
+            values = new byte[totalDataSize];
+
+            // Build offsets and copy data in one pass using cached lengths
+            int dataPos = 0;
+            int srcPos = 0;
+            offsets[0] = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int len = lengths[i];
+                srcPos += 4;
+                data.Slice(srcPos, len).CopyTo(values.AsSpan(dataPos));
+                srcPos += len;
+                dataPos += len;
+                offsets[i + 1] = dataPos;
+            }
+
+            return pos;
         }
-
-        values = new byte[totalDataSize];
-
-        // Build offsets and copy data in one pass using cached lengths
-        int dataPos = 0;
-        int srcPos = 0;
-        offsets[0] = 0;
-        for (int i = 0; i < count; i++)
+        finally
         {
-            int len = lengths[i];
-            srcPos += 4;
-            data.Slice(srcPos, len).CopyTo(values.AsSpan(dataPos));
-            srcPos += len;
-            dataPos += len;
-            offsets[i + 1] = dataPos;
+            if (rentedLengths is not null) ArrayPool<int>.Shared.Return(rentedLengths);
         }
-
-        return pos;
     }
 
     /// <summary>

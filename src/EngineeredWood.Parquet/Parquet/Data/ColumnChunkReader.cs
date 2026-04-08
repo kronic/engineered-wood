@@ -406,10 +406,20 @@ internal static class ColumnChunkReader
         }
         else if (entry.RepetitionLevelsByteLength > 0)
         {
-            var tempRep = numValues <= 4096 ? stackalloc byte[numValues] : new byte[numValues];
-            LevelDecoder.DecodeV2(
-                rawData.Slice(offset, entry.RepetitionLevelsByteLength),
-                column.MaxRepetitionLevel, numValues, tempRep, out _);
+            byte[]? rentedRep = null;
+            Span<byte> tempRep = numValues <= 1024
+                ? stackalloc byte[numValues]
+                : (rentedRep = ArrayPool<byte>.Shared.Rent(numValues)).AsSpan(0, numValues);
+            try
+            {
+                LevelDecoder.DecodeV2(
+                    rawData.Slice(offset, entry.RepetitionLevelsByteLength),
+                    column.MaxRepetitionLevel, numValues, tempRep, out _);
+            }
+            finally
+            {
+                if (rentedRep is not null) ArrayPool<byte>.Shared.Return(rentedRep);
+            }
         }
         offset += entry.RepetitionLevelsByteLength;
 
@@ -586,10 +596,20 @@ internal static class ColumnChunkReader
         }
         else if (v2Header.RepetitionLevelsByteLength > 0)
         {
-            var tempRep = numValues <= 4096 ? stackalloc byte[numValues] : new byte[numValues];
-            LevelDecoder.DecodeV2(
-                rawData.Slice(offset, v2Header.RepetitionLevelsByteLength),
-                column.MaxRepetitionLevel, numValues, tempRep, out _);
+            byte[]? rentedRep = null;
+            Span<byte> tempRep = numValues <= 1024
+                ? stackalloc byte[numValues]
+                : (rentedRep = ArrayPool<byte>.Shared.Rent(numValues)).AsSpan(0, numValues);
+            try
+            {
+                LevelDecoder.DecodeV2(
+                    rawData.Slice(offset, v2Header.RepetitionLevelsByteLength),
+                    column.MaxRepetitionLevel, numValues, tempRep, out _);
+            }
+            finally
+            {
+                if (rentedRep is not null) ArrayPool<byte>.Shared.Return(rentedRep);
+            }
         }
         offset += v2Header.RepetitionLevelsByteLength;
 

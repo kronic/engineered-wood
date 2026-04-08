@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using EngineeredWood.Encodings;
 
@@ -155,127 +156,134 @@ internal sealed class RleEncoderV2
             if ((ulong)values[i] > (ulong)maxValue) maxValue = values[i];
         }
 
-        // Adjusted = value - base (all >= 0 as unsigned)
-        Span<long> adjusted = values.Length <= 512 ? stackalloc long[values.Length] : new long[values.Length];
-        long maxAdj = 0;
-        for (int i = 0; i < values.Length; i++)
+        // Adjusted = value - base (all >= 0 as unsigned). values.Length <= MaxRunLength (512),
+        // so up to 4KB for the long buffer; rent from the pool to avoid blowing the stack.
+        long[] adjustedBuf = ArrayPool<long>.Shared.Rent(values.Length);
+        int[] bitWidthsBuf = ArrayPool<int>.Shared.Rent(values.Length);
+        try
         {
-            adjusted[i] = (long)((ulong)values[i] - (ulong)minValue);
-            if ((ulong)adjusted[i] > (ulong)maxAdj) maxAdj = adjusted[i];
-        }
-
-        // Full bit width (what Direct would use)
-        int fullBitWidth = maxAdj == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)maxAdj);
-        int fullClosest = WidthEncoding.GetClosestWidth(fullBitWidth);
-
-        // Find the 90th percentile bit width
-#if NETSTANDARD2_0
-        var bitWidths = new int[values.Length];
-#else
-        Span<int> bitWidths = values.Length <= 512 ? stackalloc int[values.Length] : new int[values.Length];
-#endif
-        for (int i = 0; i < values.Length; i++)
-            bitWidths[i] = adjusted[i] == 0 ? 0 : 64 - BitOperations.LeadingZeroCount((ulong)adjusted[i]);
-#if NETSTANDARD2_0
-        Array.Sort(bitWidths);
-#else
-        bitWidths.Sort();
-#endif
-
-        int p90Index = Math.Max(0, (int)Math.Ceiling(values.Length * 0.9) - 1);
-        int p90Width = bitWidths[p90Index];
-        if (p90Width < 1) p90Width = 1;
-        int dataWidth = WidthEncoding.GetClosestWidth(p90Width);
-
-        // No benefit if p90 width matches full width
-        if (dataWidth >= fullClosest) return false;
-
-        // Identify outliers
-        long dataMask = dataWidth >= 64 ? long.MaxValue : (1L << dataWidth) - 1;
-        long maxPatchBits = 0;
-        int outlierCount = 0;
-        for (int i = 0; i < values.Length; i++)
-        {
-            if ((ulong)adjusted[i] > (ulong)dataMask)
+            Span<long> adjusted = adjustedBuf.AsSpan(0, values.Length);
+            long maxAdj = 0;
+            for (int i = 0; i < values.Length; i++)
             {
-                outlierCount++;
-                long highBits = (long)((ulong)adjusted[i] >> dataWidth);
-                if ((ulong)highBits > (ulong)maxPatchBits) maxPatchBits = highBits;
+                adjusted[i] = (long)((ulong)values[i] - (ulong)minValue);
+                if ((ulong)adjusted[i] > (ulong)maxAdj) maxAdj = adjusted[i];
             }
-        }
 
-        if (outlierCount == 0) return false;
+            // Full bit width (what Direct would use)
+            int fullBitWidth = maxAdj == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)maxAdj);
+            int fullClosest = WidthEncoding.GetClosestWidth(fullBitWidth);
 
-        int patchWidth = maxPatchBits == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)maxPatchBits);
-        patchWidth = WidthEncoding.GetClosestWidth(patchWidth);
+            // Find the 90th percentile bit width
+            Span<int> bitWidths = bitWidthsBuf.AsSpan(0, values.Length);
+            for (int i = 0; i < values.Length; i++)
+                bitWidths[i] = adjusted[i] == 0 ? 0 : 64 - BitOperations.LeadingZeroCount((ulong)adjusted[i]);
+#if NETSTANDARD2_0
+            Array.Sort(bitWidthsBuf, 0, values.Length);
+#else
+            bitWidths.Sort();
+#endif
 
-        // Build patch list with relative gaps
-        const int patchGapWidth = 8; // always use 8 bits for gap
-        var patchList = new List<(int gap, long patchBits)>();
-        int lastPatchPos = 0;
-        for (int i = 0; i < values.Length; i++)
-        {
-            if (adjusted[i] > dataMask)
+            int p90Index = Math.Max(0, (int)Math.Ceiling(values.Length * 0.9) - 1);
+            int p90Width = bitWidths[p90Index];
+            if (p90Width < 1) p90Width = 1;
+            int dataWidth = WidthEncoding.GetClosestWidth(p90Width);
+
+            // No benefit if p90 width matches full width
+            if (dataWidth >= fullClosest) return false;
+
+            // Identify outliers
+            long dataMask = dataWidth >= 64 ? long.MaxValue : (1L << dataWidth) - 1;
+            long maxPatchBits = 0;
+            int outlierCount = 0;
+            for (int i = 0; i < values.Length; i++)
             {
-                long highBits = adjusted[i] >> dataWidth;
-                adjusted[i] &= dataMask; // keep only low bits in data
-
-                int relGap = i - lastPatchPos;
-                while (relGap > 255)
+                if ((ulong)adjusted[i] > (ulong)dataMask)
                 {
-                    patchList.Add((255, 0)); // continuation
-                    relGap -= 255;
+                    outlierCount++;
+                    long highBits = (long)((ulong)adjusted[i] >> dataWidth);
+                    if ((ulong)highBits > (ulong)maxPatchBits) maxPatchBits = highBits;
                 }
-                patchList.Add((relGap, highBits));
-                lastPatchPos = i;
             }
+
+            if (outlierCount == 0) return false;
+
+            int patchWidth = maxPatchBits == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)maxPatchBits);
+            patchWidth = WidthEncoding.GetClosestWidth(patchWidth);
+
+            // Build patch list with relative gaps
+            const int patchGapWidth = 8; // always use 8 bits for gap
+            var patchList = new List<(int gap, long patchBits)>();
+            int lastPatchPos = 0;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (adjusted[i] > dataMask)
+                {
+                    long highBits = adjusted[i] >> dataWidth;
+                    adjusted[i] &= dataMask; // keep only low bits in data
+
+                    int relGap = i - lastPatchPos;
+                    while (relGap > 255)
+                    {
+                        patchList.Add((255, 0)); // continuation
+                        relGap -= 255;
+                    }
+                    patchList.Add((relGap, highBits));
+                    lastPatchPos = i;
+                }
+            }
+
+            if (patchList.Count > 31) return false; // patchListLength is 5 bits
+
+            // Base value byte width (non-negative, but format has sign bit in MSB)
+            int baseBitsNeeded = minValue == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)minValue) + 1; // +1 for sign bit
+            int baseByteWidth = (baseBitsNeeded + 7) / 8;
+            if (baseByteWidth > 8) baseByteWidth = 8;
+
+            // Cost comparison
+            int patchedBits = 32 + baseByteWidth * 8 + values.Length * dataWidth + patchList.Count * (patchGapWidth + patchWidth);
+            int directBits = 16 + values.Length * fullClosest;
+            if (patchedBits >= directBits) return false;
+
+            // Encode header
+            int encodedDataWidth = WidthEncoding.Encode(dataWidth);
+            int encodedPatchWidth = WidthEncoding.Encode(patchWidth);
+            int adjustedLength = values.Length - 1;
+
+            byte b0 = (byte)(0x80 | (encodedDataWidth << 1) | ((adjustedLength >> 8) & 0x01));
+            byte b1 = (byte)(adjustedLength & 0xFF);
+            byte b2 = (byte)(((baseByteWidth - 1) << 5) | encodedPatchWidth);
+            byte b3 = (byte)(((patchGapWidth - 1) << 5) | patchList.Count);
+
+            _output.WriteByte(b0);
+            _output.WriteByte(b1);
+            _output.WriteByte(b2);
+            _output.WriteByte(b3);
+
+            // Write base value big-endian (sign bit in MSB; base is always >= 0 here)
+            for (int i = baseByteWidth - 1; i >= 0; i--)
+                _output.WriteByte((byte)((ulong)minValue >> (i * 8)));
+
+            // Write packed data values (adjusted, with outlier low bits only)
+            var bw = new BitWriter(_output);
+            bw.WritePackedInts(adjusted, dataWidth);
+
+            // Write patch list entries
+            for (int i = 0; i < patchList.Count; i++)
+            {
+                var (gap, patchBits) = patchList[i];
+                long entry = ((long)gap << patchWidth) | patchBits;
+                bw.WriteBits(entry, patchGapWidth + patchWidth);
+            }
+            bw.Flush();
+
+            return true;
         }
-
-        if (patchList.Count > 31) return false; // patchListLength is 5 bits
-
-        // Base value byte width (non-negative, but format has sign bit in MSB)
-        int baseBitsNeeded = minValue == 0 ? 1 : 64 - BitOperations.LeadingZeroCount((ulong)minValue) + 1; // +1 for sign bit
-        int baseByteWidth = (baseBitsNeeded + 7) / 8;
-        if (baseByteWidth > 8) baseByteWidth = 8;
-
-        // Cost comparison
-        int patchedBits = 32 + baseByteWidth * 8 + values.Length * dataWidth + patchList.Count * (patchGapWidth + patchWidth);
-        int directBits = 16 + values.Length * fullClosest;
-        if (patchedBits >= directBits) return false;
-
-        // Encode header
-        int encodedDataWidth = WidthEncoding.Encode(dataWidth);
-        int encodedPatchWidth = WidthEncoding.Encode(patchWidth);
-        int adjustedLength = values.Length - 1;
-
-        byte b0 = (byte)(0x80 | (encodedDataWidth << 1) | ((adjustedLength >> 8) & 0x01));
-        byte b1 = (byte)(adjustedLength & 0xFF);
-        byte b2 = (byte)(((baseByteWidth - 1) << 5) | encodedPatchWidth);
-        byte b3 = (byte)(((patchGapWidth - 1) << 5) | patchList.Count);
-
-        _output.WriteByte(b0);
-        _output.WriteByte(b1);
-        _output.WriteByte(b2);
-        _output.WriteByte(b3);
-
-        // Write base value big-endian (sign bit in MSB; base is always >= 0 here)
-        for (int i = baseByteWidth - 1; i >= 0; i--)
-            _output.WriteByte((byte)((ulong)minValue >> (i * 8)));
-
-        // Write packed data values (adjusted, with outlier low bits only)
-        var bw = new BitWriter(_output);
-        bw.WritePackedInts(adjusted, dataWidth);
-
-        // Write patch list entries
-        for (int i = 0; i < patchList.Count; i++)
+        finally
         {
-            var (gap, patchBits) = patchList[i];
-            long entry = ((long)gap << patchWidth) | patchBits;
-            bw.WriteBits(entry, patchGapWidth + patchWidth);
+            ArrayPool<long>.Shared.Return(adjustedBuf);
+            ArrayPool<int>.Shared.Return(bitWidthsBuf);
         }
-        bw.Flush();
-
-        return true;
     }
 
     private bool TryEncodeDelta(ReadOnlySpan<long> values)

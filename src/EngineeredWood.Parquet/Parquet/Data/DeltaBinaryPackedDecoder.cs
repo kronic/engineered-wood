@@ -66,7 +66,8 @@ internal ref struct DeltaBinaryPackedDecoder
         int valuesDecoded = 1;
 
         Span<byte> bitWidths = _miniblockCount <= 64 ? stackalloc byte[_miniblockCount] : new byte[_miniblockCount];
-        Span<long> unpacked = _valuesPerMiniblock <= 256 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
+        // Cap stack buffer at 128 longs (1 KB); fall back to a heap allocation otherwise.
+        Span<long> unpacked = _valuesPerMiniblock <= 128 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
 
         while (valuesDecoded < _totalValueCount)
         {
@@ -114,7 +115,8 @@ internal ref struct DeltaBinaryPackedDecoder
         int valuesDecoded = 1;
 
         Span<byte> bitWidths = _miniblockCount <= 64 ? stackalloc byte[_miniblockCount] : new byte[_miniblockCount];
-        Span<long> unpacked = _valuesPerMiniblock <= 256 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
+        // Cap stack buffer at 128 longs (1 KB); fall back to a heap allocation otherwise.
+        Span<long> unpacked = _valuesPerMiniblock <= 128 ? stackalloc long[_valuesPerMiniblock] : new long[_valuesPerMiniblock];
 
         while (valuesDecoded < _totalValueCount)
         {

@@ -154,7 +154,6 @@ public class ColumnReadTests(ITestOutputHelper output)
                 // Count sub-encoding types
                 var ms = new MemoryStream(decompressed);
                 int shortRepeat = 0, direct = 0, patchedBase = 0, delta = 0;
-                long totalValues = 0;
                 while (ms.Position < ms.Length)
                 {
                     int fb = ms.ReadByte();

@@ -26,7 +26,9 @@ internal sealed class IntegerColumnWriter : ColumnWriter
     {
         int nonNullCount = WritePresent(array);
 
-        Span<long> values = stackalloc long[Math.Min(nonNullCount, 1024)];
+        // Cap stack buffer at 128 longs (1 KB) — _encoder.WriteValues is called every time
+        // the buffer fills, so a smaller chunk size is fine.
+        Span<long> values = stackalloc long[Math.Min(nonNullCount, 128)];
         int written = 0;
 
         switch (array)

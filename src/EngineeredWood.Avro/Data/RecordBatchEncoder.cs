@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using Apache.Arrow;
 using Apache.Arrow.Arrays;
@@ -274,9 +275,21 @@ internal sealed class RecordBatchEncoder
     {
         var fixedArray = (FixedSizeBinaryArray)array;
         var leBytes = fixedArray.GetBytes(row); // 16-byte little-endian
-        Span<byte> bigEndian = stackalloc byte[fixedSize];
-        Decimal128ToAvroFixed(leBytes, bigEndian);
-        writer.WriteFixed(bigEndian);
+        // fixedSize comes from a user-controlled Avro schema and could in principle be large;
+        // cap stack usage at 1 KB and rent from the pool above that.
+        byte[]? rented = null;
+        Span<byte> bigEndian = fixedSize <= 1024
+            ? stackalloc byte[fixedSize]
+            : (rented = ArrayPool<byte>.Shared.Rent(fixedSize)).AsSpan(0, fixedSize);
+        try
+        {
+            Decimal128ToAvroFixed(leBytes, bigEndian);
+            writer.WriteFixed(bigEndian);
+        }
+        finally
+        {
+            if (rented is not null) ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Encodes a Decimal128 value as Avro bytes (little-endian → big-endian, minimal representation).</summary>
