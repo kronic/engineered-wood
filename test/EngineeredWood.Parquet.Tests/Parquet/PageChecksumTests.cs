@@ -188,6 +188,7 @@ public class PageChecksumTests
             await using (var writer = new ParquetFileWriter(file, ownsFile: false, new ParquetWriteOptions
             {
                 PageChecksumEnabled = true,
+                OmitPathInSchema = false, // ParquetSharp requires path_in_schema
             }))
             {
                 await writer.WriteRowGroupAsync(batch);

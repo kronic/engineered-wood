@@ -569,7 +569,10 @@ internal static class MetadataDecoder
         {
             Type = physicalType ?? throw new ParquetFormatException("ColumnMetaData missing required field: type"),
             Encodings = encodings ?? throw new ParquetFormatException("ColumnMetaData missing required field: encodings"),
-            PathInSchema = pathInSchema ?? throw new ParquetFormatException("ColumnMetaData missing required field: path_in_schema"),
+            // path_in_schema is described as required by the Parquet spec but several writers
+            // omit it (and an in-progress spec change makes it officially optional). The reader
+            // matches columns to the schema by ordinal position, so a missing path is fine.
+            PathInSchema = pathInSchema,
             Codec = codec ?? throw new ParquetFormatException("ColumnMetaData missing required field: codec"),
             NumValues = numValues ?? throw new ParquetFormatException("ColumnMetaData missing required field: num_values"),
             TotalUncompressedSize = totalUncompressedSize ?? throw new ParquetFormatException("ColumnMetaData missing required field: total_uncompressed_size"),

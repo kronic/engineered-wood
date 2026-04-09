@@ -778,7 +778,11 @@ public class ParquetFileWriterTests : IDisposable
     public async Task Dictionary_CrossValidation_ParquetSharp()
     {
         string path = TempPath("dict_cross_ps.parquet");
-        var options = new ParquetWriteOptions { Compression = CompressionCodec.Uncompressed };
+        var options = new ParquetWriteOptions
+        {
+            Compression = CompressionCodec.Uncompressed,
+            OmitPathInSchema = false, // ParquetSharp requires path_in_schema
+        };
 
         var categories = new[] { "cat_a", "cat_b", "cat_c" };
         var schema = new Apache.Arrow.Schema.Builder()
@@ -1021,7 +1025,11 @@ public class ParquetFileWriterTests : IDisposable
     public async Task CrossValidation_ParquetSharp_CanReadOurFile()
     {
         string path = TempPath("cross_ps.parquet");
-        var options = new ParquetWriteOptions { Compression = CompressionCodec.Uncompressed };
+        var options = new ParquetWriteOptions
+        {
+            Compression = CompressionCodec.Uncompressed,
+            OmitPathInSchema = false, // ParquetSharp requires path_in_schema
+        };
 
         var schema = new Apache.Arrow.Schema.Builder()
             .Field(new Field("id", Int32Type.Default, false))
@@ -1551,6 +1559,93 @@ public class ParquetFileWriterTests : IDisposable
             Assert.True(ids.IsNull(1));
             Assert.Equal(3, ids.GetValue(2));
         });
+    }
+
+    [Fact]
+    public async Task RoundTrip_NestedStructAndList_OmitPathInSchema()
+    {
+        // Verifies that we can write a nested schema with path_in_schema omitted
+        // (the new default) and still round-trip the data correctly. The reader
+        // matches columns to the schema by ordinal position, so the missing field
+        // should not affect any value, definition level, or repetition level.
+        string path = TempPath("nested_no_path_in_schema.parquet");
+
+        // Build a schema with two leaf paths inside a struct, plus a list<int>:
+        //   s: struct<id: int32, name: string>
+        //   tags: list<int32>
+        var childId = new Int32Array.Builder().AppendRange([10, 20, 30]).Build();
+        var childName = new StringArray.Builder().Append("a").Append("b").Append("c").Build();
+        var structType = new StructType(new[]
+        {
+            new Field("id", Int32Type.Default, nullable: false),
+            new Field("name", StringType.Default, nullable: false),
+        });
+        var structArray = new StructArray(structType, 3,
+            [childId, childName], ArrowBuffer.Empty, nullCount: 0);
+
+        // tags = [[1,2], [], [3,4,5]]
+        var listValues = new Int32Array.Builder().AppendRange([1, 2, 3, 4, 5]).Build();
+        var offsetsBuf = new ArrowBuffer.Builder<int>().AppendRange([0, 2, 2, 5]).Build();
+        var listType = new Apache.Arrow.Types.ListType(
+            new Field("item", Int32Type.Default, nullable: false));
+        var listArray = new ListArray(listType, 3, offsetsBuf, listValues,
+            ArrowBuffer.Empty, nullCount: 0);
+
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(new Field("s", structType, nullable: false))
+            .Field(new Field("tags", listType, nullable: false))
+            .Build();
+        var batch = new RecordBatch(schema, [structArray, listArray], 3);
+
+        // Default options omit path_in_schema.
+        await using (var file = new LocalSequentialFile(path))
+        await using (var writer = new ParquetFileWriter(file, ownsFile: false))
+        {
+            await writer.WriteRowGroupAsync(batch);
+            await writer.CloseAsync();
+        }
+
+        // Verify the field is genuinely absent in every column chunk metadata.
+        await using (var readFile = new LocalRandomAccessFile(path))
+        await using (var reader = new ParquetFileReader(readFile, ownsFile: false))
+        {
+            var meta = await reader.ReadMetadataAsync();
+            Assert.Single(meta.RowGroups);
+            foreach (var chunk in meta.RowGroups[0].Columns)
+                Assert.Null(chunk.MetaData!.PathInSchema);
+        }
+
+        // Read back and verify all values, including struct fields and list shape.
+        await using (var readFile = new LocalRandomAccessFile(path))
+        await using (var reader = new ParquetFileReader(readFile, ownsFile: false))
+        {
+            var readBatch = await reader.ReadRowGroupAsync(0);
+            Assert.Equal(3, readBatch.Length);
+            Assert.Equal(2, readBatch.ColumnCount);
+
+            var s = (StructArray)readBatch.Column(0);
+            var ids = (Int32Array)s.Fields[0];
+            var names = (StringArray)s.Fields[1];
+            Assert.Equal(10, ids.GetValue(0));
+            Assert.Equal(20, ids.GetValue(1));
+            Assert.Equal(30, ids.GetValue(2));
+            Assert.Equal("a", names.GetString(0));
+            Assert.Equal("b", names.GetString(1));
+            Assert.Equal("c", names.GetString(2));
+
+            var list = (ListArray)readBatch.Column(1);
+            var listInts = (Int32Array)list.Values;
+            // [[1,2], [], [3,4,5]]
+            Assert.Equal(0, list.ValueOffsets[0]);
+            Assert.Equal(2, list.GetValueLength(0));
+            Assert.Equal(0, list.GetValueLength(1));
+            Assert.Equal(3, list.GetValueLength(2));
+            Assert.Equal(1, listInts.GetValue(0));
+            Assert.Equal(2, listInts.GetValue(1));
+            Assert.Equal(3, listInts.GetValue(2));
+            Assert.Equal(4, listInts.GetValue(3));
+            Assert.Equal(5, listInts.GetValue(4));
+        }
     }
 
     // --- Helpers ---

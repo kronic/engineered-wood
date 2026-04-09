@@ -13,8 +13,14 @@ public sealed class ColumnMetaData
     /// <summary>Encodings used in this column chunk.</summary>
     public required IReadOnlyList<Encoding> Encodings { get; init; }
 
-    /// <summary>Dot-separated path in the schema.</summary>
-    public required IReadOnlyList<string> PathInSchema { get; init; }
+    /// <summary>
+    /// Path components in the schema (one entry per nesting level). The Parquet spec
+    /// describes this field as required, but several writers — and an in-progress spec
+    /// change — omit it when the row group columns line up positionally with the file
+    /// schema. <see langword="null"/> on read means the file did not include the field;
+    /// when re-writing such metadata, callers should fall back to the schema-derived path.
+    /// </summary>
+    public IReadOnlyList<string>? PathInSchema { get; init; }
 
     /// <summary>Compression codec used.</summary>
     public required CompressionCodec Codec { get; init; }

@@ -371,7 +371,7 @@ public sealed class ParquetFileWriter : IAsyncDisposable, IDisposable
         };
 
         // Encode footer to Thrift
-        byte[] footerBytes = MetadataEncoder.EncodeFileMetaData(fileMetaData);
+        byte[] footerBytes = MetadataEncoder.EncodeFileMetaData(fileMetaData, writePathInSchema: !_options.OmitPathInSchema);
 
         // Write footer
         await _file.WriteAsync(footerBytes, cancellationToken).ConfigureAwait(false);

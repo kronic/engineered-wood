@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using Apache.Arrow;
@@ -6,6 +7,7 @@ using Apache.Arrow.Types;
 using EngineeredWood.Compression;
 using EngineeredWood.IO.Local;
 using EngineeredWood.Parquet;
+using EngineeredWood.Parquet.Metadata;
 
 if (args.Length == 0)
 {
@@ -17,6 +19,7 @@ return args[0] switch
 {
     "create_test_file" => await CreateTestFile(args.Skip(1).ToArray()),
     "read_test_file" => await ReadTestFile(args.Skip(1).ToArray()),
+    "strip_path_in_schema" => StripPathInSchema(args.Skip(1).ToArray()),
     _ => PrintUsage(),
 };
 
@@ -34,6 +37,14 @@ static int PrintUsage()
           ew-test-tool read_test_file <path> [--batch-rows <n>] [--batch-bytes <n>] [--validate]
             Reads the file one RecordBatch at a time and reports peak memory.
             --validate checks every encoding-exercise column for correct values.
+
+          ew-test-tool strip_path_in_schema <input> <output>
+            Reads <input>, decodes its footer, and writes <output> with the same
+            row group data and a re-encoded footer that omits the path_in_schema
+            field from every column chunk's metadata. The body bytes (data pages,
+            dictionary pages, bloom filter blocks, page indexes) are copied
+            verbatim, so file offsets remain valid. Useful for testing other
+            Parquet readers' tolerance of files written without path_in_schema.
         """);
     return 1;
 }
@@ -498,6 +509,97 @@ static void Check(bool condition, string message)
 {
     if (!condition)
         throw new InvalidDataException($"Validation failed: {message}");
+}
+
+// ---------------------------------------------------------------------------
+// strip_path_in_schema
+// ---------------------------------------------------------------------------
+
+static int StripPathInSchema(string[] args)
+{
+    if (args.Length < 2)
+    {
+        Console.Error.WriteLine("Usage: strip_path_in_schema <input> <output>");
+        return 1;
+    }
+
+    string inputPath = args[0];
+    string outputPath = args[1];
+
+    if (!File.Exists(inputPath))
+    {
+        Console.Error.WriteLine($"Input file not found: {inputPath}");
+        return 1;
+    }
+
+    byte[] sourceBytes = File.ReadAllBytes(inputPath);
+
+    // Parquet layout: PAR1 <data> <footer> <footer_length:4 LE> PAR1
+    if (sourceBytes.Length < 12 ||
+        sourceBytes[0] != 'P' || sourceBytes[1] != 'A' || sourceBytes[2] != 'R' || sourceBytes[3] != '1' ||
+        sourceBytes[^4] != 'P' || sourceBytes[^3] != 'A' || sourceBytes[^2] != 'R' || sourceBytes[^1] != '1')
+    {
+        Console.Error.WriteLine("Input is not a Parquet file (missing PAR1 magic).");
+        return 1;
+    }
+
+    int footerLength = BinaryPrimitives.ReadInt32LittleEndian(sourceBytes.AsSpan(sourceBytes.Length - 8, 4));
+    int footerStart = sourceBytes.Length - 8 - footerLength;
+    if (footerStart < 4 || footerLength <= 0)
+    {
+        Console.Error.WriteLine($"Invalid footer length: {footerLength}");
+        return 1;
+    }
+
+    var footerSpan = sourceBytes.AsSpan(footerStart, footerLength);
+    var metadata = MetadataDecoder.DecodeFileMetaData(footerSpan);
+
+    // Re-encode the footer with path_in_schema omitted. The decoder has already
+    // populated PathInSchema (if present in the source), but the encoder will
+    // skip the field when writePathInSchema = false.
+    byte[] newFooter = MetadataEncoder.EncodeFileMetaData(metadata, writePathInSchema: false);
+
+    // Sanity check: the new footer must be no larger than the old one, otherwise
+    // any absolute offsets recorded in column chunks (DataPageOffset,
+    // DictionaryPageOffset, BloomFilterOffset, IndexPageOffset) would still point
+    // to the right bytes — those offsets are absolute from the start of the file
+    // and refer to data that lives *before* the footer, so footer growth/shrink
+    // is fine. We assert nothing here.
+    int columnsTouched = 0;
+    foreach (var rg in metadata.RowGroups)
+        foreach (var c in rg.Columns)
+            if (c.MetaData?.PathInSchema is not null) columnsTouched++;
+
+    using (var output = File.Create(outputPath))
+    {
+        // Body bytes [0 .. footerStart) — preserved verbatim, including data
+        // pages, dictionary pages, bloom filters, page indexes, and the leading
+        // PAR1 magic.
+        output.Write(sourceBytes, 0, footerStart);
+
+        // New footer
+        output.Write(newFooter, 0, newFooter.Length);
+
+        // Footer length (4-byte LE)
+        byte[] lenBytes = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(lenBytes, newFooter.Length);
+        output.Write(lenBytes, 0, lenBytes.Length);
+
+        // Trailing PAR1 magic
+        byte[] par1 = [(byte)'P', (byte)'A', (byte)'R', (byte)'1'];
+        output.Write(par1, 0, par1.Length);
+    }
+
+    long oldSize = sourceBytes.LongLength;
+    long newSize = new FileInfo(outputPath).Length;
+    Console.WriteLine($"Input:               {inputPath}");
+    Console.WriteLine($"Output:              {outputPath}");
+    Console.WriteLine($"Row groups:          {metadata.RowGroups.Count}");
+    Console.WriteLine($"Columns stripped:    {columnsTouched}");
+    Console.WriteLine($"Old footer size:     {FormatBytes(footerLength)}");
+    Console.WriteLine($"New footer size:     {FormatBytes(newFooter.Length)}");
+    Console.WriteLine($"File size:           {FormatBytes(oldSize)} → {FormatBytes(newSize)}");
+    return 0;
 }
 
 // ---------------------------------------------------------------------------

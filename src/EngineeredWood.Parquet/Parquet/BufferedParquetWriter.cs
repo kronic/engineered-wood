@@ -298,7 +298,7 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
             KeyValueMetadata = _options.KeyValueMetadata,
         };
 
-        byte[] footerBytes = MetadataEncoder.EncodeFileMetaData(fileMetaData);
+        byte[] footerBytes = MetadataEncoder.EncodeFileMetaData(fileMetaData, writePathInSchema: !_options.OmitPathInSchema);
         await _file.WriteAsync(footerBytes, cancellationToken).ConfigureAwait(false);
 
         var footerLengthBytes = new byte[4];

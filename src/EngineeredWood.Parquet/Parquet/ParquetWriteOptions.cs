@@ -36,7 +36,7 @@ public enum ByteArrayEncoding
 /// <summary>
 /// Options that control how Arrow data is written to Parquet files.
 /// </summary>
-public sealed class ParquetWriteOptions
+public sealed record ParquetWriteOptions
 {
     /// <summary>Default options with sensible defaults for general-purpose use.</summary>
     public static readonly ParquetWriteOptions Default = new();
@@ -132,6 +132,16 @@ public sealed class ParquetWriteOptions
     /// Maximum Bloom filter size in bytes per column per row group. Default is 1 MB.
     /// </summary>
     public int BloomFilterMaxBytes { get; init; } = 1024 * 1024;
+
+    /// <summary>
+    /// Whether to omit the <c>path_in_schema</c> field from each column chunk's
+    /// metadata. The Parquet spec currently describes the field as required, but
+    /// the row group columns are matched to the schema by ordinal position, so the
+    /// field is redundant — and an in-progress spec change makes it optional.
+    /// Omitting it shrinks the file footer, especially for wide schemas with deep
+    /// nesting. Default is <see langword="true"/>.
+    /// </summary>
+    public bool OmitPathInSchema { get; init; } = true;
 
     /// <summary>
     /// Returns whether the given column should have a Bloom filter.

@@ -421,7 +421,8 @@ public class CrossValidationTests : IDisposable
         // Write and close file before ParquetSharp reads (Windows file locking)
         {
             await using var file = new LocalSequentialFile(path);
-            await using var writer = new ParquetFileWriter(file, ownsFile: false);
+            await using var writer = new ParquetFileWriter(file, ownsFile: false,
+                new ParquetWriteOptions { OmitPathInSchema = false });
 
             var batch1 = new RecordBatch(schema,
                 [new Int32Array.Builder().AppendRange(Enumerable.Range(0, 100)).Build()], 100);
@@ -1430,6 +1431,9 @@ public class CrossValidationTests : IDisposable
 
     private static async Task WriteEW(string path, RecordBatch batch, ParquetWriteOptions? options = null)
     {
+        // ParquetSharp's reader currently requires path_in_schema, so always emit it for
+        // cross-validation tests regardless of the caller-supplied options.
+        options = (options ?? new ParquetWriteOptions()) with { OmitPathInSchema = false };
         await using var file = new LocalSequentialFile(path);
         await using var writer = new ParquetFileWriter(file, ownsFile: false, options);
         await writer.WriteRowGroupAsync(batch);
@@ -1438,8 +1442,9 @@ public class CrossValidationTests : IDisposable
 
     private static async Task WriteEmptyEW(string path)
     {
+        var options = new ParquetWriteOptions { OmitPathInSchema = false };
         await using var file = new LocalSequentialFile(path);
-        await using var writer = new ParquetFileWriter(file, ownsFile: false);
+        await using var writer = new ParquetFileWriter(file, ownsFile: false, options);
         await writer.CloseAsync();
     }
 

@@ -12,14 +12,21 @@ internal static class MetadataEncoder
     /// <summary>
     /// Encodes a <see cref="FileMetaData"/> to Thrift Compact Protocol bytes.
     /// </summary>
-    public static byte[] EncodeFileMetaData(FileMetaData metadata)
+    /// <param name="metadata">The file metadata to encode.</param>
+    /// <param name="writePathInSchema">
+    /// When <see langword="false"/>, omits the <c>path_in_schema</c> field from each
+    /// column chunk's metadata. The Parquet spec describes the field as required, but
+    /// the field is redundant with the schema and an in-progress spec change makes it
+    /// officially optional. Default is <see langword="true"/>.
+    /// </param>
+    public static byte[] EncodeFileMetaData(FileMetaData metadata, bool writePathInSchema = true)
     {
         var writer = new ThriftCompactWriter(4096);
-        WriteFileMetaData(writer, metadata);
+        WriteFileMetaData(writer, metadata, writePathInSchema);
         return writer.ToArray();
     }
 
-    private static void WriteFileMetaData(ThriftCompactWriter writer, FileMetaData metadata)
+    private static void WriteFileMetaData(ThriftCompactWriter writer, FileMetaData metadata, bool writePathInSchema)
     {
         writer.PushStruct();
 
@@ -37,7 +44,7 @@ internal static class MetadataEncoder
 
         // Field 4: row_groups (list<RowGroup>)
         writer.WriteFieldHeader(ThriftType.List, 4);
-        WriteRowGroupList(writer, metadata.RowGroups);
+        WriteRowGroupList(writer, metadata.RowGroups, writePathInSchema);
 
         // Field 5: key_value_metadata (optional, list<KeyValue>)
         if (metadata.KeyValueMetadata is { Count: > 0 })
@@ -280,20 +287,20 @@ internal static class MetadataEncoder
         writer.PopStruct();
     }
 
-    private static void WriteRowGroupList(ThriftCompactWriter writer, IReadOnlyList<RowGroup> rowGroups)
+    private static void WriteRowGroupList(ThriftCompactWriter writer, IReadOnlyList<RowGroup> rowGroups, bool writePathInSchema)
     {
         writer.WriteListHeader(ThriftType.Struct, rowGroups.Count);
         for (int i = 0; i < rowGroups.Count; i++)
-            WriteRowGroup(writer, rowGroups[i]);
+            WriteRowGroup(writer, rowGroups[i], writePathInSchema);
     }
 
-    private static void WriteRowGroup(ThriftCompactWriter writer, RowGroup rowGroup)
+    private static void WriteRowGroup(ThriftCompactWriter writer, RowGroup rowGroup, bool writePathInSchema)
     {
         writer.PushStruct();
 
         // Field 1: columns (list<ColumnChunk>)
         writer.WriteFieldHeader(ThriftType.List, 1);
-        WriteColumnChunkList(writer, rowGroup.Columns);
+        WriteColumnChunkList(writer, rowGroup.Columns, writePathInSchema);
 
         // Field 2: total_byte_size (i64)
         writer.WriteFieldHeader(ThriftType.I64, 2);
@@ -328,14 +335,14 @@ internal static class MetadataEncoder
         writer.PopStruct();
     }
 
-    private static void WriteColumnChunkList(ThriftCompactWriter writer, IReadOnlyList<ColumnChunk> chunks)
+    private static void WriteColumnChunkList(ThriftCompactWriter writer, IReadOnlyList<ColumnChunk> chunks, bool writePathInSchema)
     {
         writer.WriteListHeader(ThriftType.Struct, chunks.Count);
         for (int i = 0; i < chunks.Count; i++)
-            WriteColumnChunk(writer, chunks[i]);
+            WriteColumnChunk(writer, chunks[i], writePathInSchema);
     }
 
-    private static void WriteColumnChunk(ThriftCompactWriter writer, ColumnChunk chunk)
+    private static void WriteColumnChunk(ThriftCompactWriter writer, ColumnChunk chunk, bool writePathInSchema)
     {
         writer.PushStruct();
 
@@ -354,14 +361,14 @@ internal static class MetadataEncoder
         if (chunk.MetaData != null)
         {
             writer.WriteFieldHeader(ThriftType.Struct, 3);
-            WriteColumnMetaData(writer, chunk.MetaData);
+            WriteColumnMetaData(writer, chunk.MetaData, writePathInSchema);
         }
 
         writer.WriteStructStop();
         writer.PopStruct();
     }
 
-    private static void WriteColumnMetaData(ThriftCompactWriter writer, ColumnMetaData meta)
+    private static void WriteColumnMetaData(ThriftCompactWriter writer, ColumnMetaData meta, bool writePathInSchema)
     {
         writer.PushStruct();
 
@@ -373,9 +380,15 @@ internal static class MetadataEncoder
         writer.WriteFieldHeader(ThriftType.List, 2);
         WriteEncodingList(writer, meta.Encodings);
 
-        // Field 3: path_in_schema (list<string>)
-        writer.WriteFieldHeader(ThriftType.List, 3);
-        WriteStringList(writer, meta.PathInSchema);
+        // Field 3: path_in_schema (list<string>) — described as required by the Parquet
+        // spec, but redundant with the schema and made optional in an in-progress spec
+        // change. Skip when the writer was asked to omit it, or when the source metadata
+        // didn't carry one (e.g. round-tripping a file produced without it).
+        if (writePathInSchema && meta.PathInSchema is not null)
+        {
+            writer.WriteFieldHeader(ThriftType.List, 3);
+            WriteStringList(writer, meta.PathInSchema);
+        }
 
         // Field 4: codec (CompressionCodec as i32)
         writer.WriteFieldHeader(ThriftType.I32, 4);

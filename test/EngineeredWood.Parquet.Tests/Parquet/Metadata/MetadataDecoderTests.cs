@@ -103,7 +103,7 @@ public class MetadataDecoderTests
         var metadata = MetadataDecoder.DecodeFileMetaData(footerBytes);
 
         var columnPaths = metadata.RowGroups[0].Columns
-            .Select(c => string.Join(".", c.MetaData!.PathInSchema))
+            .Select(c => string.Join(".", c.MetaData!.PathInSchema!))
             .ToList();
 
         Assert.Contains("id", columnPaths);

@@ -25,6 +25,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="EngineeredWood.Parquet.Tests" />
     <InternalsVisibleTo Include="EngineeredWood.Parquet.Benchmarks" />
+    <InternalsVisibleTo Include="EngineeredWood.Parquet.TestTool" />
     <InternalsVisibleTo Include="EngineeredWood.Tests" />
     <InternalsVisibleTo Include="EngineeredWood.Benchmarks" />
   </ItemGroup>
