@@ -1,0 +1,39 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace EngineeredWood.Iceberg.Serialization;
+
+internal sealed class SchemaConverter : JsonConverter<Schema>
+{
+    public override Schema Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        var root = doc.RootElement;
+
+        var schemaId = root.GetProperty("schema-id").GetInt32();
+        var fields = root.GetProperty("fields").Deserialize<List<NestedField>>(options)!;
+
+        IReadOnlyList<int>? identifierFieldIds = null;
+        if (root.TryGetProperty("identifier-field-ids", out var idsElement))
+            identifierFieldIds = idsElement.Deserialize<List<int>>(options);
+
+        return new Schema(schemaId, fields, identifierFieldIds);
+    }
+
+    public override void Write(Utf8JsonWriter writer, Schema value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("schema-id", value.SchemaId);
+        writer.WriteString("type", "struct");
+        writer.WritePropertyName("fields");
+        JsonSerializer.Serialize(writer, value.Fields, options);
+
+        if (value.IdentifierFieldIds is not null)
+        {
+            writer.WritePropertyName("identifier-field-ids");
+            JsonSerializer.Serialize(writer, value.IdentifierFieldIds, options);
+        }
+
+        writer.WriteEndObject();
+    }
+}

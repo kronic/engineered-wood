@@ -37,18 +37,20 @@ internal static class ArrowToSchemaConverter
             ? FieldRepetitionType.Optional
             : FieldRepetitionType.Required;
 
+        int? fieldId = GetFieldId(field);
+
         switch (field.DataType)
         {
             case StructType structType:
-                AddStructField(elements, field.Name, repetition, structType);
+                AddStructField(elements, field.Name, repetition, structType, fieldId);
                 return;
 
             case ListType listType:
-                AddListField(elements, field.Name, repetition, listType);
+                AddListField(elements, field.Name, repetition, listType, fieldId);
                 return;
 
             case MapType mapType:
-                AddMapField(elements, field.Name, repetition, mapType);
+                AddMapField(elements, field.Name, repetition, mapType, fieldId);
                 return;
         }
 
@@ -65,18 +67,40 @@ internal static class ArrowToSchemaConverter
             ConvertedType = convertedType,
             Scale = scale,
             Precision = precision,
+            FieldId = fieldId,
         });
+    }
+
+    /// <summary>
+    /// Extracts Parquet field_id from Arrow Field metadata.
+    /// Looks for <c>PARQUET:field_id</c> or <c>field_id</c> keys.
+    /// </summary>
+    private static int? GetFieldId(Field field)
+    {
+        if (field.Metadata is null)
+            return null;
+
+        if (field.Metadata.TryGetValue("PARQUET:field_id", out string? id1) &&
+            int.TryParse(id1, out int fid1))
+            return fid1;
+
+        if (field.Metadata.TryGetValue("field_id", out string? id2) &&
+            int.TryParse(id2, out int fid2))
+            return fid2;
+
+        return null;
     }
 
     private static void AddStructField(
         List<SchemaElement> elements, string name,
-        FieldRepetitionType repetition, StructType structType)
+        FieldRepetitionType repetition, StructType structType, int? fieldId = null)
     {
         elements.Add(new SchemaElement
         {
             Name = name,
             RepetitionType = repetition,
             NumChildren = structType.Fields.Count,
+            FieldId = fieldId,
         });
 
         foreach (var child in structType.Fields)
@@ -85,7 +109,7 @@ internal static class ArrowToSchemaConverter
 
     private static void AddListField(
         List<SchemaElement> elements, string name,
-        FieldRepetitionType repetition, ListType listType)
+        FieldRepetitionType repetition, ListType listType, int? fieldId = null)
     {
         // 3-level encoding: optional/required group (LIST) → repeated group "list" → element
         elements.Add(new SchemaElement
@@ -95,6 +119,7 @@ internal static class ArrowToSchemaConverter
             NumChildren = 1,
             LogicalType = new LogicalType.ListType(),
             ConvertedType = ConvertedType.List,
+            FieldId = fieldId,
         });
 
         // Repeated group "list" with one child
@@ -112,7 +137,7 @@ internal static class ArrowToSchemaConverter
 
     private static void AddMapField(
         List<SchemaElement> elements, string name,
-        FieldRepetitionType repetition, MapType mapType)
+        FieldRepetitionType repetition, MapType mapType, int? fieldId = null)
     {
         // optional/required group (MAP) → repeated group "key_value" → key + value
         elements.Add(new SchemaElement
@@ -122,6 +147,7 @@ internal static class ArrowToSchemaConverter
             NumChildren = 1,
             LogicalType = new LogicalType.MapType(),
             ConvertedType = ConvertedType.Map,
+            FieldId = fieldId,
         });
 
         // Repeated group "key_value" with 2 children

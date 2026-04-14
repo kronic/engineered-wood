@@ -34,6 +34,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="EngineeredWood.Avro.Tests" />
     <InternalsVisibleTo Include="EngineeredWood.Avro.Benchmarks" />
+    <InternalsVisibleTo Include="EngineeredWood.Iceberg" />
+    <InternalsVisibleTo Include="EngineeredWood.Iceberg.Tests" />
   </ItemGroup>
 
 </Project>

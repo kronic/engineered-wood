@@ -40,6 +40,13 @@
     <InternalsVisibleTo Include="EngineeredWood.Avro" />
     <InternalsVisibleTo Include="EngineeredWood.Avro.Tests" />
     <InternalsVisibleTo Include="EngineeredWood.Avro.Benchmarks" />
+    <InternalsVisibleTo Include="EngineeredWood.DeltaLake" />
+    <InternalsVisibleTo Include="EngineeredWood.DeltaLake.Table" />
+    <InternalsVisibleTo Include="EngineeredWood.DeltaLake.Tests" />
+    <InternalsVisibleTo Include="EngineeredWood.DeltaLake.Table.Tests" />
+    <InternalsVisibleTo Include="EngineeredWood.DeltaLake.Benchmarks" />
+    <InternalsVisibleTo Include="EngineeredWood.Iceberg" />
+    <InternalsVisibleTo Include="EngineeredWood.Iceberg.Tests" />
   </ItemGroup>
 
 </Project>

@@ -30,4 +30,7 @@ public sealed class ColumnDescriptor
 
     /// <summary>The column path as a dot-separated string.</summary>
     public string DottedPath => string.Join(".", Path);
+
+    /// <summary>The Parquet field_id for this column, if set.</summary>
+    public int? FieldId => SchemaElement.FieldId;
 }

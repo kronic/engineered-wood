@@ -68,6 +68,37 @@ public sealed class SchemaDescriptor
         return node;
     }
 
+    /// <summary>
+    /// Resolves Parquet field_ids to top-level column names.
+    /// For leaf columns, returns the dotted path. For group columns
+    /// (struct, list, map), returns the top-level group name.
+    /// Returns null for any field_id that is not found.
+    /// </summary>
+    public IReadOnlyList<string?> ResolveFieldIds(IReadOnlyList<int> fieldIds)
+    {
+        // Build a map from field_id to top-level node name
+        var fieldIdToName = new Dictionary<int, string>();
+        foreach (var child in Root.Children)
+            CollectFieldIds(child, child.Name, fieldIdToName);
+
+        var result = new string?[fieldIds.Count];
+        for (int i = 0; i < fieldIds.Count; i++)
+        {
+            fieldIdToName.TryGetValue(fieldIds[i], out result[i]);
+        }
+        return result;
+    }
+
+    private static void CollectFieldIds(
+        SchemaNode node, string topLevelName, Dictionary<int, string> map)
+    {
+        if (node.Element.FieldId.HasValue)
+            map[node.Element.FieldId.Value] = topLevelName;
+
+        foreach (var child in node.Children)
+            CollectFieldIds(child, topLevelName, map);
+    }
+
     private static void CollectLeaves(
         SchemaNode node,
         string[] pathBuffer,
