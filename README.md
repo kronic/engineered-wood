@@ -1,17 +1,15 @@
 # EngineeredWood
 
-A .NET library for reading and writing columnar file formats — **Apache Parquet**, **Apache ORC**, **Apache Avro** — and table formats — **Delta Lake** and **Apache Iceberg** — as Apache Arrow `RecordBatch` objects, optimized for cloud storage.
+A .NET library for reading and writing columnar file formats — **Apache Parquet**, **Apache ORC**, **Apache Avro** — and table formats — **Delta Lake** and **Apache Iceberg** — as Apache Arrow `RecordBatch` objects.
 
-## What
+## Highlights
 
-EngineeredWood is a fast, modern implementation of columnar file formats for .NET that treats cloud storage as a first-class target rather than an afterthought. The traditional `Stream` abstraction — with its single position cursor — is a poor fit for columnar layouts, where a reader needs to fetch many disjoint byte ranges concurrently. Every "seek + read" on cloud storage becomes a separate HTTP request with significant latency.
-
-This library replaces `Stream` with an offset-based I/O layer that supports:
-
-- **Concurrent reads** with no shared position cursor
-- **Batch range requests** that can be coalesced to minimize round trips
-- **Pooled buffer management** to reduce GC pressure
-- **Pluggable backends** — local files and Azure Blob Storage, with the same interface
+- **Five formats, one Arrow surface.** Parquet, ORC, and Avro readers and writers all speak `Apache.Arrow.RecordBatch`, and Delta Lake and Iceberg sit on top of them.
+- **Predicate pushdown across formats.** A shared expression library (`EngineeredWood.Expressions`) drives row-group pruning in Parquet, file pruning in Delta Lake, and scan planning in Iceberg from the same tree.
+- **Table-format support.** Delta Lake Reader v3 / Writer v7 with deletion vectors, column mapping, type widening, change data feed, identity columns, row tracking, and V2 checkpoints. Iceberg v1/v2/v3 metadata with manifest read/write and partition-transform-aware scan planning.
+- **Cloud-native I/O.** An offset-based I/O layer (instead of `Stream`) lets readers issue concurrent, coalesced range requests against local files or Azure Blob Storage.
+- **Pure-managed compression.** Snappy, Zstd, and LZ4 via managed codecs; no native dependencies.
+- **Multi-targeted.** Libraries build for `netstandard2.0`, `net8.0`, and `net10.0`.
 
 ## Why
 
@@ -35,20 +33,8 @@ src/
   EngineeredWood.DeltaLake.Table/        Delta Lake table API (high-level Arrow I/O)
   EngineeredWood.Iceberg/                Apache Iceberg metadata + scan planning
   EngineeredWood.Azure/                  Azure Blob Storage backends
-test/
-  EngineeredWood.Parquet.Tests/             xUnit tests for Parquet
-  EngineeredWood.Parquet.Benchmarks/        BenchmarkDotNet suites for Parquet
-  EngineeredWood.Parquet.Compatibility/     92-file cross-tool validation
-  EngineeredWood.Orc.Tests/                 xUnit tests for ORC
-  EngineeredWood.Orc.Benchmarks/            BenchmarkDotNet suites for ORC
-  EngineeredWood.Avro.Tests/                xUnit tests for Avro
-  EngineeredWood.Avro.Benchmarks/           BenchmarkDotNet suites for Avro
-  EngineeredWood.DeltaLake.Tests/           xUnit tests for the Delta log layer
-  EngineeredWood.DeltaLake.Table.Tests/     xUnit tests for the Delta table API
-  EngineeredWood.DeltaLake.Benchmarks/      BenchmarkDotNet suites for Delta Lake
-  EngineeredWood.Iceberg.Tests/             xUnit tests for Iceberg
-  EngineeredWood.Expressions.Tests/         xUnit tests for the expression library
-  EngineeredWood.Expressions.Arrow.Tests/   xUnit tests for the Arrow row evaluator
+test/                                    xUnit tests, BenchmarkDotNet suites, and a 92-file
+                                         cross-tool Parquet compatibility harness
 ```
 
 ## Features — Parquet
@@ -246,6 +232,21 @@ for the architecture and remaining phases.
 
 ## Shared infrastructure
 
+### I/O
+
+EngineeredWood uses an offset-based I/O layer instead of `Stream`. A single
+`Stream` position is a poor fit for columnar layouts, where readers fetch many
+disjoint byte ranges — each "seek + read" on cloud storage is a separate
+HTTP request. The offset-based interfaces support concurrent reads with no
+shared cursor, batched range requests, and pooled buffers.
+
+| Backend | Read | Write |
+|---|---|---|
+| Local files | `LocalRandomAccessFile` | `LocalSequentialFile` |
+| Azure Blob Storage | `AzureBlobRandomAccessFile` | `AzureBlobSequentialFile` |
+
+`CoalescingFileReader` is a decorator that merges nearby byte ranges to reduce I/O round trips — particularly useful on cloud storage.
+
 ### Compression
 
 | Codec | Library | Parquet | ORC | Avro |
@@ -257,15 +258,6 @@ for the architecture and remaining phases.
 | Brotli | System.IO.Compression | yes | — | — |
 | Deflate | System.IO.Compression | — | yes | yes |
 | Uncompressed | — | yes | yes | yes |
-
-### I/O backends
-
-| Backend | Read | Write |
-|---|---|---|
-| Local files | `LocalRandomAccessFile` | `LocalSequentialFile` |
-| Azure Blob Storage | `AzureBlobRandomAccessFile` | `AzureBlobSequentialFile` |
-
-`CoalescingFileReader` is a decorator that merges nearby byte ranges to reduce I/O round trips — particularly useful on cloud storage.
 
 ## Usage
 
@@ -423,7 +415,8 @@ dotnet build
 dotnet test
 ```
 
-Requires .NET 10.
+Libraries multi-target `netstandard2.0`, `net8.0`, and `net10.0`. Tests and
+benchmarks require .NET 8 or .NET 10 (some also run on `net472`).
 
 ## Architecture
 
