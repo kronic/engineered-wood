@@ -44,6 +44,8 @@ internal ref struct DeltaBinaryPackedDecoder
         _miniblockCount = checked((int)ReadUnsignedVarInt());
         _totalValueCount = checked((int)ReadUnsignedVarInt());
         _lastValue = ReadZigZagVarInt();
+        if (_miniblockCount <= 0)
+            throw new InvalidDataException("DELTA_BINARY_PACKED miniblock count must be positive.");
         _valuesPerMiniblock = _blockSize / _miniblockCount;
     }
 

@@ -70,7 +70,7 @@ internal static class Compressor
         return Snappy.Compress(source, destination);
     }
 
-    private static unsafe int CompressGzip(ReadOnlySpan<byte> source, Span<byte> destination)
+    private static int CompressGzip(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         // Use a MemoryStream to collect compressed output, then copy to destination.
         using var outputStream = new MemoryStream();
@@ -110,7 +110,7 @@ internal static class Compressor
         return encoded;
     }
 
-    private static unsafe int CompressDeflate(ReadOnlySpan<byte> source, Span<byte> destination)
+    private static int CompressDeflate(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         using var outputStream = new MemoryStream();
         using (var deflate = new DeflateStream(outputStream, CompressionLevel.Fastest, leaveOpen: true))
