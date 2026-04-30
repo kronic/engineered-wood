@@ -50,6 +50,20 @@ public sealed record ParquetWriteOptions
     public CompressionCodec Compression { get; init; } = CompressionCodec.Snappy;
 
     /// <summary>
+    /// Codec-agnostic compression level applied to data and dictionary pages.
+    /// <see langword="null"/> (the default) preserves each codec's historical default.
+    /// Codecs without a tunable level (Snappy, Lz4Hadoop) ignore this setting.
+    /// </summary>
+    public BlockCompressionLevel? CompressionLevel { get; init; }
+
+    /// <summary>
+    /// Optional explicit native compression level. When set, overrides <see cref="CompressionLevel"/>.
+    /// Honored by Zstd (1..22), Brotli (0..11), and Lz4 (LZ4Level enum value).
+    /// Ignored by Gzip/Deflate (BCL exposes only an enum-valued level).
+    /// </summary>
+    public int? CustomCompressionLevel { get; init; }
+
+    /// <summary>
     /// Data page version. Default is <see cref="DataPageVersion.V2"/>.
     /// </summary>
     public DataPageVersion DataPageVersion { get; init; } = DataPageVersion.V2;
@@ -94,6 +108,12 @@ public sealed record ParquetWriteOptions
     /// Columns not listed use <see cref="Compression"/>.
     /// </summary>
     public IReadOnlyDictionary<string, CompressionCodec>? ColumnCodecs { get; init; }
+
+    /// <summary>
+    /// Per-column compression-level overrides, keyed by dotted column path.
+    /// Columns not listed use <see cref="CompressionLevel"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, BlockCompressionLevel>? ColumnCompressionLevels { get; init; }
 
     /// <summary>
     /// Per-column encoding overrides for BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY columns,
@@ -168,6 +188,15 @@ public sealed record ParquetWriteOptions
         ColumnCodecs != null && ColumnCodecs.TryGetValue(string.Join(".", pathInSchema), out var codec)
             ? codec
             : Compression;
+
+    /// <summary>
+    /// Resolves the compression level for a column, checking per-column overrides first.
+    /// </summary>
+    internal BlockCompressionLevel? GetCompressionLevel(IReadOnlyList<string> pathInSchema) =>
+        ColumnCompressionLevels != null &&
+        ColumnCompressionLevels.TryGetValue(string.Join(".", pathInSchema), out var level)
+            ? level
+            : CompressionLevel;
 
     /// <summary>
     /// Resolves the byte-array encoding for a column, checking per-column overrides first.

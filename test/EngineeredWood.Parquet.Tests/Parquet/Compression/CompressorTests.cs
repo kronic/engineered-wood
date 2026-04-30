@@ -120,4 +120,94 @@ public class CompressorTests
         Assert.Equal(TestData.Length, decompressedLength);
         Assert.Equal(TestData, decompressed);
     }
+
+    public static IEnumerable<object[]> TunableCodecsAndLevels()
+    {
+        var codecs = new[]
+        {
+            CompressionCodec.Gzip, CompressionCodec.Deflate, CompressionCodec.Brotli,
+            CompressionCodec.Lz4, CompressionCodec.Zstd,
+        };
+        var levels = new[]
+        {
+            BlockCompressionLevel.Fastest, BlockCompressionLevel.Optimal, BlockCompressionLevel.SmallestSize,
+        };
+        foreach (var c in codecs)
+            foreach (var l in levels)
+                yield return new object[] { c, l };
+    }
+
+    [Theory]
+    [MemberData(nameof(TunableCodecsAndLevels))]
+    public void RoundTrips_AtLevel(CompressionCodec codec, BlockCompressionLevel level)
+    {
+        int maxLen = Compressor.GetMaxCompressedLength(codec, TestData.Length);
+        var compressed = new byte[maxLen];
+        int compressedLength = Compressor.Compress(codec, TestData, compressed, level);
+
+        var decompressed = new byte[TestData.Length];
+        int decompressedLength = Decompressor.Decompress(
+            codec, compressed.AsSpan(0, compressedLength), decompressed);
+
+        Assert.Equal(TestData.Length, decompressedLength);
+        Assert.Equal(TestData, decompressed);
+    }
+
+    [Theory]
+    [InlineData(CompressionCodec.Gzip)]
+    [InlineData(CompressionCodec.Deflate)]
+    [InlineData(CompressionCodec.Brotli)]
+    [InlineData(CompressionCodec.Lz4)]
+    [InlineData(CompressionCodec.Zstd)]
+    public void SmallestSize_NotLargerThan_Fastest(CompressionCodec codec)
+    {
+        // Use a large, highly redundant payload so size differences across levels exceed framing
+        // overhead. The default TestData is too short to demonstrate monotonicity for Gzip/Deflate
+        // (especially on netstandard2.0, where SmallestSize falls back to Optimal).
+        var payload = MakeRedundantPayload(64 * 1024);
+        int fastestLen = CompressLength(codec, payload, BlockCompressionLevel.Fastest);
+        int smallestLen = CompressLength(codec, payload, BlockCompressionLevel.SmallestSize);
+        Assert.True(smallestLen <= fastestLen,
+            $"{codec}: SmallestSize ({smallestLen}) > Fastest ({fastestLen})");
+    }
+
+    private static byte[] MakeRedundantPayload(int length)
+    {
+        var data = new byte[length];
+        var pattern = "the quick brown fox jumps over the lazy dog. "u8;
+        for (int i = 0; i < length; i++)
+            data[i] = pattern[i % pattern.Length];
+        return data;
+    }
+
+    [Fact]
+    public void Zstd_CustomLevel_RoundTripsAndShrinks()
+    {
+        // Zstd level 22 is the maximum; should produce output no larger than default.
+        int maxLen = Compressor.GetMaxCompressedLength(CompressionCodec.Zstd, TestData.Length);
+        var compressed = new byte[maxLen];
+        int compressedLength = Compressor.Compress(
+            CompressionCodec.Zstd, TestData, compressed, level: null, customLevel: 22);
+
+        var decompressed = new byte[TestData.Length];
+        int decompressedLength = Decompressor.Decompress(
+            CompressionCodec.Zstd, compressed.AsSpan(0, compressedLength), decompressed);
+
+        Assert.Equal(TestData.Length, decompressedLength);
+        Assert.Equal(TestData, decompressed);
+
+        int defaultLen = CompressLength(CompressionCodec.Zstd, level: null);
+        Assert.True(compressedLength <= defaultLen,
+            $"Zstd custom level 22 ({compressedLength}) > default ({defaultLen})");
+    }
+
+    private static int CompressLength(CompressionCodec codec, BlockCompressionLevel? level)
+        => CompressLength(codec, TestData, level);
+
+    private static int CompressLength(CompressionCodec codec, byte[] payload, BlockCompressionLevel? level)
+    {
+        int maxLen = Compressor.GetMaxCompressedLength(codec, payload.Length);
+        var compressed = new byte[maxLen];
+        return Compressor.Compress(codec, payload, compressed, level);
+    }
 }

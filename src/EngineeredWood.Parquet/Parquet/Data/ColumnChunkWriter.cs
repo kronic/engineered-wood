@@ -107,25 +107,19 @@ internal static class ColumnChunkWriter
         int nonNullCount,
         ParquetWriteOptions options)
     {
-        // Resolve per-column overrides for compression and byte-array encoding
+        // Resolve per-column overrides for compression, level, and byte-array encoding
         var columnCodec = options.GetCodec(pathInSchema);
+        var columnLevel = options.GetCompressionLevel(pathInSchema);
         var columnByteArrayEncoding = options.GetByteArrayEncoding(pathInSchema);
-        if (columnCodec != options.Compression || columnByteArrayEncoding != options.ByteArrayEncoding)
+        if (columnCodec != options.Compression
+            || columnLevel != options.CompressionLevel
+            || columnByteArrayEncoding != options.ByteArrayEncoding)
         {
-            options = new ParquetWriteOptions
+            options = options with
             {
                 Compression = columnCodec,
-                DataPageVersion = options.DataPageVersion,
-                DataPageSize = options.DataPageSize,
-                DictionaryPageSizeLimit = options.DictionaryPageSizeLimit,
-                DictionaryEnabled = options.DictionaryEnabled,
-                RowGroupMaxRows = options.RowGroupMaxRows,
-                RowGroupMaxBytes = options.RowGroupMaxBytes,
+                CompressionLevel = columnLevel,
                 ByteArrayEncoding = columnByteArrayEncoding,
-                ColumnCodecs = options.ColumnCodecs,
-                ColumnEncodings = options.ColumnEncodings,
-                CreatedBy = options.CreatedBy,
-                KeyValueMetadata = options.KeyValueMetadata,
             };
         }
 
@@ -373,7 +367,7 @@ internal static class ColumnChunkWriter
         byte[] dictData = dictResult.DictionaryPageData;
         int uncompressedSize = dictData.Length;
 
-        int compressedLen = CompressTo(dictData, options.Compression);
+        int compressedLen = CompressTo(dictData, options);
 
         var pageHeader = new PageHeader
         {
@@ -439,7 +433,7 @@ internal static class ColumnChunkWriter
 
         // Compress values section only (V2: levels are uncompressed)
         int compressedValuesLen = CompressTo(
-            t_valuesBuffer.AsSpan(0, uncompressedValuesSize), options.Compression);
+            t_valuesBuffer.AsSpan(0, uncompressedValuesSize), options);
 
         int numRows = maxRepLevel > 0 ? CountRows(repLevels, rowOffset, numValues, maxRepLevel) : numValues;
 
@@ -541,7 +535,7 @@ internal static class ColumnChunkWriter
         }
         t_valuesBuffer.AsSpan(0, valuesLen).CopyTo(uncompressedBody.AsSpan(bPos));
 
-        int compressedLen = CompressTo(uncompressedBody, options.Compression);
+        int compressedLen = CompressTo(uncompressedBody, options);
 
         var pageHeader = new PageHeader
         {
@@ -655,7 +649,7 @@ internal static class ColumnChunkWriter
 
         // Compress values section only (V2: levels are uncompressed)
         int compressedValuesLen = CompressTo(
-            t_valuesBuffer.AsSpan(0, uncompressedValuesSize), options.Compression);
+            t_valuesBuffer.AsSpan(0, uncompressedValuesSize), options);
 
         int numNulls = numValues - nonNullCount;
         int numRows = maxRepLevel > 0 ? CountRows(repLevels, offset, numValues, maxRepLevel) : numValues;
@@ -761,7 +755,7 @@ internal static class ColumnChunkWriter
         }
         valuesBytes.CopyTo(uncompressedBody.AsSpan(bPos));
 
-        int compressedLen = CompressTo(uncompressedBody, options.Compression);
+        int compressedLen = CompressTo(uncompressedBody, options);
 
         var pageHeader = new PageHeader
         {
@@ -800,7 +794,7 @@ internal static class ColumnChunkWriter
     /// Returns the number of compressed bytes written.
     /// For Uncompressed codec, copies data into the buffer and returns data.Length.
     /// </summary>
-    private static int CompressTo(ReadOnlySpan<byte> data, CompressionCodec codec)
+    private static int CompressTo(ReadOnlySpan<byte> data, ParquetWriteOptions options)
     {
         if (data.Length == 0)
         {
@@ -808,9 +802,11 @@ internal static class ColumnChunkWriter
             return 0;
         }
 
-        int maxLen = Compressor.GetMaxCompressedLength(codec, data.Length);
+        int maxLen = Compressor.GetMaxCompressedLength(options.Compression, data.Length);
         EnsureCompressBuffer(maxLen);
-        return Compressor.Compress(codec, data, t_compressBuffer!.AsSpan(0, maxLen));
+        return Compressor.Compress(
+            options.Compression, data, t_compressBuffer!.AsSpan(0, maxLen),
+            options.CompressionLevel, options.CustomCompressionLevel);
     }
 
     private static void EnsureCompressBuffer(int size)

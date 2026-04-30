@@ -171,20 +171,7 @@ public sealed class BufferedParquetWriter : IAsyncDisposable, IDisposable
                 // and encode via the standard non-dictionary path (delta, BSS, plain, etc.)
                 var array = ReconstructArrowArray(s, dictResults[i]!.Value,
                     defLevelsPerColumn[i], numRows);
-                var nonDictOptions = new ParquetWriteOptions
-                {
-                    Compression = _options.Compression,
-                    DataPageVersion = _options.DataPageVersion,
-                    DataPageSize = _options.DataPageSize,
-                    DictionaryPageSizeLimit = _options.DictionaryPageSizeLimit,
-                    DictionaryEnabled = false,
-                    RowGroupMaxRows = _options.RowGroupMaxRows,
-                    RowGroupMaxBytes = _options.RowGroupMaxBytes,
-                    ByteArrayEncoding = _options.ByteArrayEncoding,
-                    ColumnCodecs = _options.ColumnCodecs,
-                    ColumnEncodings = _options.ColumnEncodings,
-                    CreatedBy = _options.CreatedBy,
-                };
+                var nonDictOptions = _options with { DictionaryEnabled = false };
                 columnResults[i] = ColumnChunkWriter.WriteColumn(
                     array, s.PathInSchema, s.PhysicalType, s.TypeLength,
                     s.IsNullable, nonDictOptions);
