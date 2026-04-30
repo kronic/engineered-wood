@@ -146,7 +146,9 @@ internal static class OrcCompression
     /// Compresses data using ORC's block-based compression scheme.
     /// Each block has a 3-byte header: bit0=isOriginal, bits1-23=chunkLength.
     /// </summary>
-    public static byte[] Compress(CompressionKind kind, ReadOnlySpan<byte> input, int compressionBlockSize)
+    public static byte[] Compress(
+        CompressionKind kind, ReadOnlySpan<byte> input, int compressionBlockSize,
+        BlockCompressionLevel? level = null, int? customLevel = null)
     {
         if (kind == CompressionKind.None)
             return input.ToArray();
@@ -164,7 +166,7 @@ internal static class OrcCompression
 
             int maxCompressed = Compressor.GetMaxCompressedLength(codec, blockSize);
             var compBuf = ArrayPool<byte>.Shared.Rent(maxCompressed);
-            int compLen = Compressor.Compress(codec, block, compBuf);
+            int compLen = Compressor.Compress(codec, block, compBuf, level, customLevel);
 
             if (compLen < blockSize)
             {
@@ -201,7 +203,8 @@ internal static class OrcCompression
     /// </summary>
     public static void TranslatePosition(
         long uncompressedOffset, ReadOnlySpan<byte> uncompressedData,
-        CompressionKind kind, int compressionBlockSize, IList<ulong> positions)
+        CompressionKind kind, int compressionBlockSize, IList<ulong> positions,
+        BlockCompressionLevel? level = null, int? customLevel = null)
     {
         if (kind == CompressionKind.None)
         {
@@ -225,11 +228,12 @@ internal static class OrcCompression
                 return;
             }
 
-            // Compute compressed size of this block
+            // Compute compressed size of this block — must use the same level as the actual write
+            // so the row index points to the correct compressed offset.
             var block = uncompressedData.Slice((int)inputOffset, blockSize);
             int maxCompressed = Compressor.GetMaxCompressedLength(codec, blockSize);
             var compBuf = ArrayPool<byte>.Shared.Rent(maxCompressed);
-            int compLen = Compressor.Compress(codec, block, compBuf);
+            int compLen = Compressor.Compress(codec, block, compBuf, level, customLevel);
             int outputBlockSize = compLen < blockSize ? compLen : blockSize;
             ArrayPool<byte>.Shared.Return(compBuf);
 

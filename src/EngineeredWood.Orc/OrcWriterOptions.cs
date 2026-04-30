@@ -1,6 +1,7 @@
 // Copyright (c) Curt Hagenlocher. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using EngineeredWood.Compression;
 using EngineeredWood.Orc.Proto;
 
 namespace EngineeredWood.Orc;
@@ -24,6 +25,18 @@ public sealed class OrcWriterOptions
     /// Compression block size. Default is 256 KB.
     /// </summary>
     public int CompressionBlockSize { get; set; } = 256 * 1024;
+
+    /// <summary>
+    /// Codec-agnostic compression level. <see langword="null"/> (the default) preserves
+    /// each codec's historical default. Codecs without a tunable level (Snappy) ignore this.
+    /// </summary>
+    public BlockCompressionLevel? CompressionLevel { get; set; }
+
+    /// <summary>
+    /// Optional explicit native compression level. When set, overrides <see cref="CompressionLevel"/>.
+    /// Honored by Zstd (1..22) and Lz4 (LZ4Level enum value). Ignored by Zlib/Deflate.
+    /// </summary>
+    public int? CustomCompressionLevel { get; set; }
 
     /// <summary>
     /// Default encoding family for integer columns.

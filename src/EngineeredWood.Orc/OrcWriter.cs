@@ -272,7 +272,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
                 var indexBytes = rowIndex.ToByteArray();
                 byte[] indexData;
                 if (_options.Compression != CompressionKind.None)
-                    indexData = OrcCompression.Compress(_options.Compression, indexBytes, _options.CompressionBlockSize);
+                    indexData = OrcCompression.Compress(_options.Compression, indexBytes, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
                 else
                     indexData = indexBytes;
 
@@ -297,7 +297,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
             var bfiBytes = bfi.ToByteArray();
             byte[] bfiData;
             if (_options.Compression != CompressionKind.None)
-                bfiData = OrcCompression.Compress(_options.Compression, bfiBytes, _options.CompressionBlockSize);
+                bfiData = OrcCompression.Compress(_options.Compression, bfiBytes, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
             else
                 bfiData = bfiBytes;
 
@@ -323,7 +323,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
 
             if (_options.Compression != CompressionKind.None)
             {
-                compressedData = OrcCompression.Compress(_options.Compression, rawSpan, _options.CompressionBlockSize);
+                compressedData = OrcCompression.Compress(_options.Compression, rawSpan, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
                 writeData = compressedData;
             }
             else
@@ -361,7 +361,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
         var footerBytes = stripeFooter.ToByteArray();
         byte[] footerData;
         if (_options.Compression != CompressionKind.None)
-            footerData = OrcCompression.Compress(_options.Compression, footerBytes, _options.CompressionBlockSize);
+            footerData = OrcCompression.Compress(_options.Compression, footerBytes, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
         else
             footerData = footerBytes;
 
@@ -441,7 +441,8 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
                             OrcCompression.TranslatePosition(
                                 (long)uncompOffset, rawData,
                                 _options.Compression, _options.CompressionBlockSize,
-                                entry.Positions);
+                                entry.Positions,
+                                _options.CompressionLevel, _options.CustomCompressionLevel);
                         }
                         else
                         {
@@ -645,7 +646,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
             var metadataBytes = metadata.ToByteArray();
             byte[] metadataData;
             if (_options.Compression != CompressionKind.None)
-                metadataData = OrcCompression.Compress(_options.Compression, metadataBytes, _options.CompressionBlockSize);
+                metadataData = OrcCompression.Compress(_options.Compression, metadataBytes, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
             else
                 metadataData = metadataBytes;
 
@@ -697,7 +698,7 @@ public sealed class OrcWriter : IAsyncDisposable, IDisposable
         var footerBytes = footer.ToByteArray();
         byte[] footerData;
         if (_options.Compression != CompressionKind.None)
-            footerData = OrcCompression.Compress(_options.Compression, footerBytes, _options.CompressionBlockSize);
+            footerData = OrcCompression.Compress(_options.Compression, footerBytes, _options.CompressionBlockSize, _options.CompressionLevel, _options.CustomCompressionLevel);
         else
             footerData = footerBytes;
 
