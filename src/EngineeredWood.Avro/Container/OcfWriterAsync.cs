@@ -4,6 +4,7 @@
 using System.Security.Cryptography;
 using EngineeredWood.Avro.Schema;
 using EngineeredWood.Buffers;
+using EngineeredWood.Compression;
 using EngineeredWood.Encodings;
 
 namespace EngineeredWood.Avro.Container;
@@ -17,15 +18,21 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
 
     private readonly Stream _stream;
     private readonly AvroCodec _codec;
+    private readonly BlockCompressionLevel? _level;
+    private readonly int? _customLevel;
     private readonly byte[] _syncMarker;
     private readonly GrowableBuffer _compressBuffer = new(4096);
     private bool _headerWritten;
     private bool _finished;
 
-    public OcfWriterAsync(Stream stream, AvroCodec codec)
+    public OcfWriterAsync(
+        Stream stream, AvroCodec codec,
+        BlockCompressionLevel? level = null, int? customLevel = null)
     {
         _stream = stream;
         _codec = codec;
+        _level = level;
+        _customLevel = customLevel;
 #if NET6_0_OR_GREATER
         _syncMarker = RandomNumberGenerator.GetBytes(16);
 #else
@@ -75,7 +82,7 @@ internal sealed class OcfWriterAsync : IAsyncDisposable
         else
         {
             _compressBuffer.Reset();
-            AvroCompression.Compress(_codec, encodedData.Span, _compressBuffer);
+            AvroCompression.Compress(_codec, encodedData.Span, _compressBuffer, _level, _customLevel);
             await WriteVarLongAsync(_compressBuffer.Length, ct).ConfigureAwait(false);
             await WriteMemoryAsync(_compressBuffer.WrittenMemory, ct).ConfigureAwait(false);
         }

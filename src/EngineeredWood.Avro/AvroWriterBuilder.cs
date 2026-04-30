@@ -3,6 +3,7 @@
 
 using EngineeredWood.Avro.Container;
 using EngineeredWood.Avro.Schema;
+using EngineeredWood.Compression;
 
 namespace EngineeredWood.Avro;
 
@@ -13,6 +14,8 @@ public sealed class AvroWriterBuilder
 {
     private readonly Apache.Arrow.Schema _arrowSchema;
     private AvroCodec _codec = AvroCodec.Null;
+    private BlockCompressionLevel? _compressionLevel;
+    private int? _customCompressionLevel;
     private string _recordName = "Record";
     private string? _recordNamespace;
     private AvroSchema? _explicitAvroSchema;
@@ -45,11 +48,31 @@ public sealed class AvroWriterBuilder
         return this;
     }
 
+    /// <summary>
+    /// Codec-agnostic compression level for OCF blocks. Codecs without a tunable level
+    /// (Null, Snappy) ignore this setting.
+    /// </summary>
+    public AvroWriterBuilder WithCompressionLevel(BlockCompressionLevel level)
+    {
+        _compressionLevel = level;
+        return this;
+    }
+
+    /// <summary>
+    /// Explicit native compression level. Overrides <see cref="WithCompressionLevel"/>.
+    /// Honored by Zstandard (1..22) and Lz4 (LZ4Level enum value); ignored by Deflate.
+    /// </summary>
+    public AvroWriterBuilder WithCustomCompressionLevel(int level)
+    {
+        _customCompressionLevel = level;
+        return this;
+    }
+
     /// <summary>Build a synchronous OCF writer targeting the given stream.</summary>
     public AvroWriter Build(Stream output)
     {
         var avroRecord = ResolveAvroSchema();
-        var ocf = new OcfWriter(output, _codec);
+        var ocf = new OcfWriter(output, _codec, _compressionLevel, _customCompressionLevel);
         return new AvroWriter(ocf, _arrowSchema, avroRecord);
     }
 
@@ -57,7 +80,7 @@ public sealed class AvroWriterBuilder
     public async ValueTask<AvroAsyncWriter> BuildAsync(Stream output, CancellationToken ct = default)
     {
         var avroRecord = ResolveAvroSchema();
-        var ocf = new OcfWriterAsync(output, _codec);
+        var ocf = new OcfWriterAsync(output, _codec, _compressionLevel, _customCompressionLevel);
         await ocf.WriteHeaderAsync(avroRecord, ct).ConfigureAwait(false);
         return new AvroAsyncWriter(ocf, _arrowSchema, avroRecord);
     }

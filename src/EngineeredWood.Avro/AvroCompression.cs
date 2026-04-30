@@ -18,7 +18,9 @@ internal static class AvroCompression
     /// Compresses data into a caller-owned buffer, avoiding per-call allocations.
     /// The caller should call <see cref="GrowableBuffer.Reset"/> before this method.
     /// </summary>
-    public static void Compress(AvroCodec codec, ReadOnlySpan<byte> data, GrowableBuffer output)
+    public static void Compress(
+        AvroCodec codec, ReadOnlySpan<byte> data, GrowableBuffer output,
+        BlockCompressionLevel? level = null, int? customLevel = null)
     {
         if (codec == AvroCodec.Null)
         {
@@ -34,14 +36,14 @@ internal static class AvroCompression
 
         if (codec == AvroCodec.Lz4)
         {
-            CompressLz4(data, output);
+            CompressLz4(data, output, level, customLevel);
             return;
         }
 
         var coreCodec = ToCoreCodec(codec);
         int maxLen = Compressor.GetMaxCompressedLength(coreCodec, data.Length);
         var span = output.GetSpan(maxLen);
-        int written = Compressor.Compress(coreCodec, data, span);
+        int written = Compressor.Compress(coreCodec, data, span, level, customLevel);
         output.Advance(written);
     }
 
@@ -132,7 +134,9 @@ internal static class AvroCompression
     /// Avro LZ4 = 4-byte LE uncompressed size + LZ4 block data.
     /// Compatible with Python lz4.block.compress(store_size=True).
     /// </summary>
-    private static void CompressLz4(ReadOnlySpan<byte> data, GrowableBuffer output)
+    private static void CompressLz4(
+        ReadOnlySpan<byte> data, GrowableBuffer output,
+        BlockCompressionLevel? level, int? customLevel)
     {
         // Write 4-byte LE uncompressed size header
         var header = output.GetSpan(4);
@@ -142,7 +146,7 @@ internal static class AvroCompression
         // Compress directly into the output buffer
         int maxLen = Compressor.GetMaxCompressedLength(CompressionCodec.Lz4, data.Length);
         var span = output.GetSpan(maxLen);
-        int written = Compressor.Compress(CompressionCodec.Lz4, data, span);
+        int written = Compressor.Compress(CompressionCodec.Lz4, data, span, level, customLevel);
         output.Advance(written);
     }
 
