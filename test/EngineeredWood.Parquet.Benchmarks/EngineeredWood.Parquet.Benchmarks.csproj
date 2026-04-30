@@ -17,8 +17,16 @@
     <PackageReference Include="Apache.Arrow" Version="22.1.0" />
     <PackageReference Include="BenchmarkDotNet" Version="0.*" />
     <PackageReference Include="ParquetSharp" Version="21.*" />
-    <PackageReference Include="Parquet.Net" Version="5.*" />
     <PackageReference Include="PolySharp" Version="1.*" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <!-- Parquet.Net 5.6.0 dropped netstandard2.0 support. -->
+    <PackageReference Include="Parquet.Net" Version="5.5.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net472'">
+    <PackageReference Include="Parquet.Net" Version="5.*" />
   </ItemGroup>
 
 </Project>
