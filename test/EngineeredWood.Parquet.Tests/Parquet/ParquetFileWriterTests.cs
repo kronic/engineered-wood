@@ -1927,28 +1927,44 @@ public class ParquetFileWriterTests : IDisposable
     [Fact]
     public void EncodingStrategyResolver_V2_Int32_DeltaBinaryPacked()
     {
-        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Int32, ByteArrayEncoding.DeltaLengthByteArray);
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Int32, ByteArrayEncoding.DeltaLengthByteArray, FloatingPointEncoding.ByteStreamSplit);
         Assert.Equal(Encoding.DeltaBinaryPacked, enc);
     }
 
     [Fact]
     public void EncodingStrategyResolver_V2_Float_ByteStreamSplit()
     {
-        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Float, ByteArrayEncoding.DeltaLengthByteArray);
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Float, ByteArrayEncoding.DeltaLengthByteArray, FloatingPointEncoding.ByteStreamSplit);
         Assert.Equal(Encoding.ByteStreamSplit, enc);
+    }
+
+    [Fact]
+    public void EncodingStrategyResolver_V2_Float_Alp()
+    {
+#pragma warning disable EWPARQUET0001 // Test exercises the experimental enum value intentionally.
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Float, ByteArrayEncoding.DeltaLengthByteArray, FloatingPointEncoding.Alp);
+        Assert.Equal(Encoding.Alp, enc);
+#pragma warning restore EWPARQUET0001
+    }
+
+    [Fact]
+    public void EncodingStrategyResolver_V2_Double_Plain()
+    {
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.Double, ByteArrayEncoding.DeltaLengthByteArray, FloatingPointEncoding.Plain);
+        Assert.Equal(Encoding.Plain, enc);
     }
 
     [Fact]
     public void EncodingStrategyResolver_V2_ByteArray_Default_DLBA()
     {
-        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.ByteArray, ByteArrayEncoding.DeltaLengthByteArray);
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.ByteArray, ByteArrayEncoding.DeltaLengthByteArray, FloatingPointEncoding.ByteStreamSplit);
         Assert.Equal(Encoding.DeltaLengthByteArray, enc);
     }
 
     [Fact]
     public void EncodingStrategyResolver_V2_ByteArray_DBA()
     {
-        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.ByteArray, ByteArrayEncoding.DeltaByteArray);
+        var enc = EncodingStrategyResolver.GetV2Encoding(PhysicalType.ByteArray, ByteArrayEncoding.DeltaByteArray, FloatingPointEncoding.ByteStreamSplit);
         Assert.Equal(Encoding.DeltaByteArray, enc);
     }
 

@@ -827,27 +827,81 @@ internal static class ColumnChunkWriter
         ParquetWriteOptions options, out Encoding encoding)
     {
         bool useDba = options.ByteArrayEncoding == ByteArrayEncoding.DeltaByteArray;
+#pragma warning disable EWPARQUET0001 // Caller has opted in via the experimental enum value; internal dispatch should not re-warn.
+        bool useAlp = options.FloatingPointEncoding == FloatingPointEncoding.Alp;
+#pragma warning restore EWPARQUET0001
+        bool usePlainFp = options.FloatingPointEncoding == FloatingPointEncoding.Plain;
 
         if (nonNullCount == 0)
         {
-            encoding = EncodingStrategyResolver.GetV2Encoding(physicalType, options.ByteArrayEncoding);
+            encoding = EncodingStrategyResolver.GetV2Encoding(physicalType, options.ByteArrayEncoding, options.FloatingPointEncoding);
             EnsureValuesBuffer(0);
             return 0;
         }
 
-        encoding = EncodingStrategyResolver.GetV2Encoding(physicalType, options.ByteArrayEncoding);
+        encoding = EncodingStrategyResolver.GetV2Encoding(physicalType, options.ByteArrayEncoding, options.FloatingPointEncoding);
         return physicalType switch
         {
             PhysicalType.Boolean => EncodeBooleanValuesRleToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.Int32 => EncodeDeltaInt32ToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.Int64 => EncodeDeltaInt64ToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.Float when useAlp => EncodeAlpSingleToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.Float when usePlainFp => EncodePlainToBuffer(array, offset, numValues, nonNullCount, physicalType, typeLength, defLevels),
             PhysicalType.Float => EncodeBssSingleToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.Double when useAlp => EncodeAlpDoubleToBuffer(array, offset, numValues, nonNullCount, defLevels),
+            PhysicalType.Double when usePlainFp => EncodePlainToBuffer(array, offset, numValues, nonNullCount, physicalType, typeLength, defLevels),
             PhysicalType.Double => EncodeBssDoubleToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.ByteArray when useDba => EncodeDbaByteArrayToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.ByteArray => EncodeDlbaToBuffer(array, offset, numValues, nonNullCount, defLevels),
             PhysicalType.FixedLenByteArray when useDba => EncodeDbaFlbaToBuffer(array, offset, numValues, nonNullCount, defLevels, typeLength),
             _ => EncodePlainToBuffer(array, offset, numValues, nonNullCount, physicalType, typeLength, defLevels),
         };
+    }
+
+    private static int EncodeAlpSingleToBuffer(
+        IArrowArray array, int offset, int numValues, int nonNullCount, int[]? defLevels)
+    {
+        ReadOnlySpan<float> source = MemoryMarshal.Cast<byte, float>(array.Data.Buffers[1].Span);
+        float[] dense;
+        ReadOnlySpan<float> values;
+        if (defLevels == null)
+        {
+            values = source.Slice(offset, numValues);
+            dense = [];
+        }
+        else
+        {
+            dense = ExtractNonNullValues<float>(array, offset, numValues, nonNullCount, defLevels);
+            values = dense;
+        }
+
+        byte[] page = AlpEncoder.EncodeFloats(values);
+        EnsureValuesBuffer(page.Length);
+        page.CopyTo(t_valuesBuffer!, 0);
+        return page.Length;
+    }
+
+    private static int EncodeAlpDoubleToBuffer(
+        IArrowArray array, int offset, int numValues, int nonNullCount, int[]? defLevels)
+    {
+        ReadOnlySpan<double> source = MemoryMarshal.Cast<byte, double>(array.Data.Buffers[1].Span);
+        double[] dense;
+        ReadOnlySpan<double> values;
+        if (defLevels == null)
+        {
+            values = source.Slice(offset, numValues);
+            dense = [];
+        }
+        else
+        {
+            dense = ExtractNonNullValues<double>(array, offset, numValues, nonNullCount, defLevels);
+            values = dense;
+        }
+
+        byte[] page = AlpEncoder.EncodeDoubles(values);
+        EnsureValuesBuffer(page.Length);
+        page.CopyTo(t_valuesBuffer!, 0);
+        return page.Length;
     }
 
 

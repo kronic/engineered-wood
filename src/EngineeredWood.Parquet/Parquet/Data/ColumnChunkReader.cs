@@ -704,6 +704,12 @@ internal static class ColumnChunkReader
         {
             DecodeByteStreamSplitValues(data, column, nonNullCount, state);
         }
+#pragma warning disable EWPARQUET0001 // The reader must accept ALP-encoded pages produced by other writers regardless of our experimental marking.
+        else if (encoding == Encoding.Alp)
+        {
+            DecodeAlpValues(data, column, nonNullCount, state);
+        }
+#pragma warning restore EWPARQUET0001
         else if (encoding == Encoding.Rle)
         {
             DecodeRleBooleanValues(data, column, nonNullCount, state);
@@ -895,6 +901,32 @@ internal static class ColumnChunkReader
             default:
                 throw new NotSupportedException(
                     $"Physical type '{column.PhysicalType}' is not supported for BYTE_STREAM_SPLIT decoding.");
+        }
+    }
+
+    private static void DecodeAlpValues(
+        ReadOnlySpan<byte> data,
+        ColumnDescriptor column,
+        int count,
+        ColumnBuildState state)
+    {
+        switch (column.PhysicalType)
+        {
+            case PhysicalType.Float:
+            {
+                var dest = state.ReserveValues<float>(count);
+                AlpDecoder.DecodeFloats(data, dest, count);
+                break;
+            }
+            case PhysicalType.Double:
+            {
+                var dest = state.ReserveValues<double>(count);
+                AlpDecoder.DecodeDoubles(data, dest, count);
+                break;
+            }
+            default:
+                throw new NotSupportedException(
+                    $"Physical type '{column.PhysicalType}' is not supported for ALP decoding.");
         }
     }
 

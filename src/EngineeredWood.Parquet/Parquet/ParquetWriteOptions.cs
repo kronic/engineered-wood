@@ -1,6 +1,7 @@
 // Copyright (c) Curt Hagenlocher. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using System.Diagnostics.CodeAnalysis;
 using EngineeredWood.Compression;
 
 namespace EngineeredWood.Parquet;
@@ -15,6 +16,36 @@ public enum DataPageVersion
 
     /// <summary>Data page V2: levels are stored separately (uncompressed); only values are compressed.</summary>
     V2 = 2,
+}
+
+/// <summary>
+/// Controls the non-dictionary fallback encoding for FLOAT and DOUBLE columns
+/// when using V2 data pages.
+/// </summary>
+public enum FloatingPointEncoding
+{
+    /// <summary>
+    /// BYTE_STREAM_SPLIT: byte-interleaving encoding that pairs well with a generic compressor.
+    /// Supported by parquet-mr ≥ 1.12 (mid-2021) and contemporaneous parquet-cpp/Arrow/DuckDB
+    /// builds. This is the default.
+    /// </summary>
+    ByteStreamSplit,
+
+    /// <summary>
+    /// ADAPTIVE_LOSSLESS_FLOATING_POINT (ALP, encoding 10): decimal-aware integer encoding plus
+    /// frame-of-reference and bit-packing. Strong for monetary, sensor, and scientific data with
+    /// limited decimal precision; comparable to plain values for high-precision irrational data.
+    /// New in parquet-format; older readers will not be able to decode it.
+    /// </summary>
+    [Experimental("EWPARQUET0001")]
+    Alp,
+
+    /// <summary>
+    /// PLAIN: write IEEE-754 values uncompressed. Universal lowest-common-denominator —
+    /// readable by every Parquet implementation. Choose this for maximum reader compatibility
+    /// or when an outer codec (e.g. Zstd) already exploits byte-level correlation.
+    /// </summary>
+    Plain,
 }
 
 /// <summary>
@@ -102,6 +133,13 @@ public sealed record ParquetWriteOptions
     /// Set to <see cref="ByteArrayEncoding.DeltaByteArray"/> for sorted or prefix-heavy data.
     /// </summary>
     public ByteArrayEncoding ByteArrayEncoding { get; init; } = ByteArrayEncoding.DeltaLengthByteArray;
+
+    /// <summary>
+    /// Non-dictionary fallback encoding for FLOAT and DOUBLE columns when using V2 data pages.
+    /// Default is <see cref="FloatingPointEncoding.ByteStreamSplit"/>; set to
+    /// <see cref="FloatingPointEncoding.Alp"/> for decimal-like floating-point data.
+    /// </summary>
+    public FloatingPointEncoding FloatingPointEncoding { get; init; } = FloatingPointEncoding.ByteStreamSplit;
 
     /// <summary>
     /// Per-column compression codec overrides, keyed by dotted column path (e.g. "col1" or "struct1.field1").

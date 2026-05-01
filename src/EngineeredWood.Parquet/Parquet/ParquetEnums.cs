@@ -1,6 +1,8 @@
 // Copyright (c) Curt Hagenlocher. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using System.Diagnostics.CodeAnalysis;
+
 namespace EngineeredWood.Parquet;
 
 /// <summary>
@@ -32,6 +34,13 @@ public enum Encoding
     DeltaByteArray = 7,
     RleDictionary = 8,
     ByteStreamSplit = 9,
+
+    /// <summary>
+    /// Adaptive Lossless floating-Point Compression (ALP). The Parquet spec proposal is
+    /// not yet finalized; the wire format may change before the spec is ratified.
+    /// </summary>
+    [Experimental("EWPARQUET0001")]
+    Alp = 10,
 }
 
 /// <summary>

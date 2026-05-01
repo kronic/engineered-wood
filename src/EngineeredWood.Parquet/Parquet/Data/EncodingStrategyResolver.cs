@@ -19,12 +19,22 @@ internal static class EncodingStrategyResolver
     /// <summary>
     /// Gets the non-dictionary encoding for a V2 data page based on the physical type.
     /// </summary>
-    public static Encoding GetV2Encoding(PhysicalType physicalType, ByteArrayEncoding byteArrayEncoding) =>
+    public static Encoding GetV2Encoding(
+        PhysicalType physicalType,
+        ByteArrayEncoding byteArrayEncoding,
+        FloatingPointEncoding floatingPointEncoding) =>
         physicalType switch
         {
             PhysicalType.Boolean => Encoding.Rle,
             PhysicalType.Int32 or PhysicalType.Int64 => Encoding.DeltaBinaryPacked,
-            PhysicalType.Float or PhysicalType.Double => Encoding.ByteStreamSplit,
+            PhysicalType.Float or PhysicalType.Double => floatingPointEncoding switch
+            {
+#pragma warning disable EWPARQUET0001 // ALP is intentionally selectable; the experimental signal lives on the enum value, not internal dispatch.
+                FloatingPointEncoding.Alp => Encoding.Alp,
+#pragma warning restore EWPARQUET0001
+                FloatingPointEncoding.Plain => Encoding.Plain,
+                _ => Encoding.ByteStreamSplit,
+            },
             PhysicalType.ByteArray => byteArrayEncoding == ByteArrayEncoding.DeltaByteArray
                 ? Encoding.DeltaByteArray
                 : Encoding.DeltaLengthByteArray,
@@ -44,6 +54,6 @@ internal static class EncodingStrategyResolver
     /// </summary>
     public static Encoding GetFallbackEncoding(PhysicalType physicalType, ParquetWriteOptions options) =>
         options.DataPageVersion == DataPageVersion.V2
-            ? GetV2Encoding(physicalType, options.ByteArrayEncoding)
+            ? GetV2Encoding(physicalType, options.ByteArrayEncoding, options.FloatingPointEncoding)
             : GetV1Encoding();
 }
