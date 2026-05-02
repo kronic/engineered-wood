@@ -1368,7 +1368,7 @@ public class LanceDatasetWriterTests
             string versions = Path.Combine(path, "_versions");
             Assert.Equal(3, Directory.GetFiles(versions, "*.manifest").Length);
             Assert.Equal(2, Directory.GetFiles(data, "*.lance").Length);
-            Assert.Equal(1, Directory.GetFiles(deletions, "*.arrow").Length);
+            Assert.Single(Directory.GetFiles(deletions, "*.arrow"));
 
             var vac = await LanceDatasetWriter.VacuumAsync(path);
             // The original data file is now orphaned (latest manifest only
@@ -1378,7 +1378,7 @@ public class LanceDatasetWriterTests
             Assert.Single(Directory.GetFiles(data, "*.lance"));
             Assert.Empty(Directory.GetFiles(deletions, "*.arrow"));
             Assert.Single(Directory.GetFiles(versions, "*.manifest"));
-            Assert.Equal(1, vac.DataFilesDeleted.Count);
+            Assert.Single(vac.DataFilesDeleted);
             Assert.Equal(2, vac.ManifestsDeleted.Count);
 
             await using var table = await LanceTable.OpenAsync(path);

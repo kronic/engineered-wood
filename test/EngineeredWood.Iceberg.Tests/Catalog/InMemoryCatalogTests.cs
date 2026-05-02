@@ -152,7 +152,7 @@ public class InMemoryCatalogTests
 
         var table = await _catalog.CreateTableAsync(id, _schema, spec: spec);
 
-        Assert.Equal(1, table.CurrentSpec.Fields.Count);
+        Assert.Single(table.CurrentSpec.Fields);
         Assert.IsType<BucketTransform>(table.CurrentSpec.Fields[0].Transform);
     }
 
@@ -167,7 +167,7 @@ public class InMemoryCatalogTests
 
         var table = await _catalog.CreateTableAsync(id, _schema, sortOrder: order);
 
-        Assert.Equal(1, table.CurrentSortOrder.Fields.Count);
+        Assert.Single(table.CurrentSortOrder.Fields);
     }
 
     [Fact]

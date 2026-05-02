@@ -883,7 +883,7 @@ public sealed class LanceFileReader : IAsyncDisposable, IDisposable
             if (!nullable) continue;
             levelBitmaps[k] = new byte[(levelLengths[k] + 7) / 8];
             if (levelBitmaps[k]!.Length == 0) continue;
-            System.Array.Fill(levelBitmaps[k]!, (byte)0xFF);
+            levelBitmaps[k].AsSpan().Fill((byte)0xFF);
             int trailing = levelLengths[k] & 7;
             if (trailing != 0)
                 levelBitmaps[k]![^1] &= (byte)((1 << trailing) - 1);

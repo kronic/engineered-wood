@@ -1049,7 +1049,7 @@ public sealed class LanceFileWriter : IAsyncDisposable
     private static AncestorCascade EmptyCascade(int rows)
     {
         var per = new int[rows];
-        System.Array.Fill(per, -1);
+        per.AsSpan().Fill(-1);
         return new AncestorCascade(System.Array.Empty<RepDefLayer>(), per);
     }
 
@@ -3101,7 +3101,11 @@ public sealed class LanceFileWriter : IAsyncDisposable
 
     private void ThrowIfFinalized()
     {
+#if NET8_0_OR_GREATER
         ObjectDisposedException.ThrowIf(_disposed, this);
+#else
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
+#endif
         if (_finalized)
             throw new InvalidOperationException(
                 "LanceFileWriter has already been finalised; no further writes are allowed.");
